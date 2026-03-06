@@ -212,11 +212,12 @@ func (c *CommandUpdate) SetCtxKeyspace(keyspace string) {
 }
 
 type CommandDelete struct {
-	CtxKeyspace    string
-	TableName      string
-	WhereExpLexems []*Lexem
-	IfExists       bool
-	WhereExpAst    ast.Expr
+	CtxKeyspace     string
+	TableName       string
+	ColumnsToDelete []string
+	WhereExpLexems  []*Lexem
+	IfExists        bool
+	WhereExpAst     ast.Expr
 }
 
 func (c *CommandDelete) GetCtxKeyspace() string {
@@ -1563,15 +1564,31 @@ func parseUpdate(s string) (*CommandUpdate, string, error) {
 func parseDelete(s string) (*CommandDelete, string, error) {
 	var l *Lexem
 	var err error
+	cmd := CommandDelete{ColumnsToDelete: []string{}}
 	l, s = getKeyword(s, `(?i)DELETE`, true)
 	if l == nil {
 		return nil, s, fmt.Errorf("expected DELETE: %s", s)
 	}
+	for {
+		l, s = getKeyword(s, `(?i)FROM`, false)
+		if l != nil {
+			break
+		}
+		l, s = getComma(s)
+		if l != nil {
+			continue
+		}
+		l, s = getIdentOrPointedIdent(s)
+		if l != nil {
+			cmd.ColumnsToDelete = append(cmd.ColumnsToDelete, l.V)
+			continue
+		}
+		return nil, s, fmt.Errorf("expected FROM or column name: %s", s)
+	}
 	l, s = getKeyword(s, `(?i)FROM`, true)
 	if l == nil {
-		return nil, s, fmt.Errorf("expected FROM, column list not supported here: %s", s)
+		return nil, s, fmt.Errorf("expected FROM: %s", s)
 	}
-	cmd := CommandDelete{}
 	l, s = getIdentOrPointedIdent(s)
 	if l == nil {
 		return nil, s, fmt.Errorf("expected update table ident: %s", s)
@@ -1603,6 +1620,17 @@ func parseDelete(s string) (*CommandDelete, string, error) {
 	l, s = getKeyword(s, `(?i)IF`, true)
 	if l != nil {
 		return nil, s, fmt.Errorf("IF not upported, it affects performance: %s", s)
+	}
+
+	// Verify table name in supplied column names, strip table name if needed
+	for i := range len(cmd.ColumnsToDelete) {
+		parts := strings.Split(cmd.ColumnsToDelete[i], ".")
+		if len(parts) == 2 {
+			if parts[0] != cmd.TableName {
+				return nil, s, fmt.Errorf("unexpected table name %s", cmd.ColumnsToDelete[i])
+			}
+			cmd.ColumnsToDelete[i] = parts[1]
+		}
 	}
 
 	if len(cmd.WhereExpLexems) > 0 {

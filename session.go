@@ -2,7 +2,6 @@ package gocqlmem
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
 	"math/big"
 	"reflect"
@@ -105,16 +104,16 @@ func (s *Session) execInsert(cmd *CommandInsert) (bool, error) {
 	return ks.execInsert(cmd)
 }
 
-func (s *Session) execSelect(cmd *CommandSelect) ([]string, [][]any, error) {
+func (s *Session) execSelect(cmd *CommandSelect, lastSelectedRowIdx int, maxRows int) ([]string, [][]any, int, error) {
 	s.Lock.RLock()
 
 	ks, ksExists := s.KeyspaceMap[cmd.GetCtxKeyspace()]
 	s.Lock.RUnlock()
 	if !ksExists {
-		return []string{}, [][]any{}, fmt.Errorf("keyspace %s does not exist", cmd.GetCtxKeyspace())
+		return []string{}, [][]any{}, -1, fmt.Errorf("keyspace %s does not exist", cmd.GetCtxKeyspace())
 	}
 
-	return ks.execSelect(cmd)
+	return ks.execSelect(cmd, lastSelectedRowIdx, maxRows)
 }
 
 func (s *Session) execUpdate(cmd *CommandUpdate) (bool, error) {
@@ -264,22 +263,6 @@ type resultMetadata struct {
 	// it is at minimum len(columns) but may be larger, for instance when a column
 	// is a UDT or tuple.
 	actualColCount int
-}
-
-type Iter struct {
-	err     error
-	pos     int
-	meta    resultMetadata
-	numRows int
-	next    *nextIter
-	//host    *HostInfo
-
-	//framer *framer
-	closed int32
-
-	//RetrievedTypes  []CqlDataTypeType
-	RetrievedNames  []string
-	RetrievedValues [][]any
 }
 
 type UUID [16]byte
@@ -525,32 +508,11 @@ func (t TupleTypeInfo) New() interface{} {
 	return val
 }
 
-func (iter *Iter) Columns() []ColumnInfo {
-	return iter.meta.columns
-}
-
 // TupeColumnName will return the column name of a tuple value in a column named
 // c at index n. It should be used if a specific element within a tuple is needed
 // to be extracted from a map returned from SliceMap or MapScan.
 func TupleColumnName(c string, n int) string {
 	return fmt.Sprintf("%s[%d]", c, n)
-}
-
-// func (iter *Iter) readColumn() ([]byte, error) {
-// 	return iter.framer.readBytesInternal()
-// }
-
-func (iter *Iter) RowData() (RowData, error) {
-	if iter.err != nil {
-		return RowData{}, iter.err
-	}
-
-	rowData := RowData{
-		Columns: iter.RetrievedNames,
-		Values:  make([]interface{}, len(iter.RetrievedNames)),
-	}
-
-	return rowData, nil
 }
 
 // func scanColumn(p []byte, col ColumnInfo, dest []interface{}) (int, error) {
@@ -576,294 +538,6 @@ func (iter *Iter) RowData() (RowData, error) {
 // 		return 1, nil
 // 	}
 // }
-
-func (iter *Iter) SliceMap() ([]map[string]interface{}, error) {
-	if iter.err != nil {
-		return nil, iter.err
-	}
-
-	// Not checking for the error because we just did
-	rowData, _ := iter.RowData()
-	dataToReturn := make([]map[string]interface{}, 0)
-	for iter.Scan(rowData.Values...) {
-		m := make(map[string]interface{}, len(rowData.Columns))
-		for i, column := range rowData.Columns {
-			m[column] = rowData.Values[i]
-		}
-		dataToReturn = append(dataToReturn, m)
-	}
-	if iter.err != nil {
-		return nil, iter.err
-	}
-	return dataToReturn, nil
-}
-
-func (iter *Iter) Close() error {
-	return iter.err
-}
-
-type Query struct {
-	stmt                string
-	values              []interface{}
-	session             *Session
-	pageSize            int
-	pageState           []byte
-	disableAutoPage     bool
-	disableSkipMetadata bool
-}
-
-func (q *Query) PageSize(n int) *Query {
-	q.pageSize = n
-	return q
-}
-
-func (q *Query) PageState(state []byte) *Query {
-	q.pageState = state
-	q.disableAutoPage = true
-	return q
-}
-
-type Scanner interface {
-	// Next advances the row pointer to point at the next row, the row is valid until
-	// the next call of Next. It returns true if there is a row which is available to be
-	// scanned into with Scan.
-	// Next must be called before every call to Scan.
-	Next() bool
-
-	// Scan copies the current row's columns into dest. If the length of dest does not equal
-	// the number of columns returned in the row an error is returned. If an error is encountered
-	// when unmarshalling a column into the value in dest an error is returned and the row is invalidated
-	// until the next call to Next.
-	// Next must be called before calling Scan, if it is not an error is returned.
-	Scan(...interface{}) error
-
-	// Err returns the if there was one during iteration that resulted in iteration being unable to complete.
-	// Err will also release resources held by the iterator, the Scanner should not used after being called.
-	Err() error
-}
-type iterScanner struct {
-	iter  *Iter
-	cols  []interface{}
-	valid bool
-}
-
-func (is *iterScanner) Next() bool {
-	if is.iter.pos >= len(is.iter.RetrievedValues) {
-		return false
-	}
-	for i := range len(is.iter.RetrievedNames) {
-		is.cols[i] = is.iter.RetrievedValues[is.iter.pos][i]
-	}
-	is.iter.pos++
-	return true
-}
-
-func (is *iterScanner) Scan(dest ...interface{}) error {
-	for i := range len(is.cols) {
-		dest[i] = is.cols[i]
-	}
-	return nil
-}
-func (is *iterScanner) Err() error {
-	iter := is.iter
-	is.iter = nil
-	is.cols = nil
-	is.valid = false
-	return iter.Close()
-}
-
-func (iter *Iter) Scanner() Scanner {
-	if iter == nil {
-		return nil
-	}
-
-	return &iterScanner{iter: iter, cols: make([]interface{}, len(iter.RetrievedNames))}
-}
-
-func (q *Query) Iter() *Iter {
-	cmds, err := ParseCommands(q.stmt)
-	if err != nil {
-		return &Iter{err: err}
-	}
-	if len(cmds) != 1 {
-		return &Iter{err: fmt.Errorf("exactly one CQL cmd expected, got: %s", q.stmt)}
-	}
-
-	switch cmd := cmds[0].(type) {
-	case *CommandCreateKeyspace:
-		return &Iter{err: q.session.createKeyspace(cmd)}
-	case *CommandUseKeyspace:
-		return &Iter{}
-	case *CommandDropKeyspace:
-		return &Iter{err: q.session.dropKeyspace(cmd)}
-	case *CommandCreateTable:
-		return &Iter{err: q.session.createTable(cmd)}
-	case *CommandTruncateTable:
-		return &Iter{err: q.session.truncateTable(cmd)}
-	case *CommandDropTable:
-		return &Iter{err: q.session.dropTable(cmd)}
-	case *CommandInsert:
-		isApplied, err := q.session.execInsert(cmd)
-		if err != nil {
-			return &Iter{err: err}
-		}
-		return &Iter{
-			//RetrievedTypes:  []CqlDataTypeType{CqlDataTypeBool},
-			RetrievedNames:  []string{"[applied]"},
-			RetrievedValues: [][]any{{isApplied}}}
-	case *CommandSelect:
-		names, values, err := q.session.execSelect(cmd)
-		if err != nil {
-			return &Iter{err: err}
-		}
-		return &Iter{
-			//RetrievedTypes:  types,
-			RetrievedNames:  names,
-			RetrievedValues: values}
-	case *CommandUpdate:
-		isApplied, err := q.session.execUpdate(cmd)
-		if err != nil {
-			return &Iter{err: err}
-		}
-		return &Iter{
-			//RetrievedTypes:  []CqlDataTypeType{CqlDataTypeBool},
-			RetrievedNames:  []string{"[applied]"},
-			RetrievedValues: [][]any{{isApplied}}}
-
-	case *CommandDelete:
-		isApplied, err := q.session.execDelete(cmd)
-		if err != nil {
-			return &Iter{err: err}
-		}
-		return &Iter{
-			//RetrievedTypes:  []CqlDataTypeType{CqlDataTypeBool},
-			RetrievedNames:  []string{"[applied]"},
-			RetrievedValues: [][]any{{isApplied}}}
-
-	default:
-		return &Iter{err: fmt.Errorf("Iter() does not support cmd %v", cmd)}
-	}
-}
-
-func (iter *Iter) checkErrAndNotFound() error {
-	if iter.err != nil {
-		return iter.err
-		//} else if iter.numRows == 0 {
-	} else if len(iter.RetrievedValues) == 0 {
-		return errors.New("not found")
-	}
-	return nil
-}
-
-func (iter *Iter) Scan(dest ...interface{}) bool {
-	if iter.err != nil || iter.pos >= len(iter.RetrievedValues) {
-		return false
-	}
-
-	if len(dest) != len(iter.RetrievedNames) {
-		iter.err = fmt.Errorf("gocqlmem: not enough columns to scan into: have %d want %d", len(dest), len(iter.RetrievedNames))
-		return false
-	}
-
-	for i := range len(iter.RetrievedNames) {
-		dest[i] = iter.RetrievedValues[iter.pos][i]
-	}
-
-	iter.pos++
-	return true
-
-	// if iter.err != nil {
-	// 	return false
-	// }
-
-	// if iter.pos >= iter.numRows {
-	// 	if iter.next != nil {
-	// 		*iter = *iter.next.fetch()
-	// 		return iter.Scan(dest...)
-	// 	}
-	// 	return false
-	// }
-
-	// if iter.next != nil && iter.pos >= iter.next.pos {
-	// 	iter.next.fetchAsync()
-	// }
-
-	// // currently only support scanning into an expand tuple, such that its the same
-	// // as scanning in more values from a single column
-	// if len(dest) != iter.meta.actualColCount {
-	// 	iter.err = fmt.Errorf("gocql: not enough columns to scan into: have %d want %d", len(dest), iter.meta.actualColCount)
-	// 	return false
-	// }
-
-	// // i is the current position in dest, could posible replace it and just use
-	// // slices of dest
-	// i := 0
-	// for _, col := range iter.meta.columns {
-	// 	colBytes, err := iter.readColumn()
-	// 	if err != nil {
-	// 		iter.err = err
-	// 		return false
-	// 	}
-
-	// 	n, err := scanColumn(colBytes, col, dest[i:])
-	// 	if err != nil {
-	// 		iter.err = err
-	// 		return false
-	// 	}
-	// 	i += n
-	// }
-
-	// iter.pos++
-	// return true
-}
-
-func (iter *Iter) MapScan(m map[string]interface{}) bool {
-	if iter.err != nil {
-		return false
-	}
-
-	rowDataValues := make([]any, len(iter.RetrievedNames))
-	if iter.Scan(rowDataValues...) {
-		for i, name := range iter.RetrievedNames {
-			m[name] = rowDataValues[i]
-		}
-		return true
-	}
-	return false
-
-	// // Not checking for the error because we just did
-	// rowData, _ := iter.RowData()
-
-	// for i, col := range rowData.Columns {
-	// 	if dest, ok := m[col]; ok {
-	// 		rowData.Values[i] = dest
-	// 	}
-	// }
-
-	// if iter.Scan(rowData.Values...) {
-	// 	rowData.rowMap(m)
-	// 	return true
-	// }
-	// return false
-}
-
-// INSERT, UPDATE, DELETE
-func (q *Query) MapScanCAS(dest map[string]interface{}) (applied bool, err error) {
-	iter := q.Iter()
-	if err := iter.checkErrAndNotFound(); err != nil {
-		return false, err
-	}
-	iter.MapScan(dest)
-	applied = dest["[applied]"].(bool)
-	delete(dest, "[applied]")
-
-	return applied, iter.Close()
-}
-
-// CREATE KEYSPACE
-func (q *Query) Exec() error {
-	return q.Iter().Close()
-}
 
 func (s *Session) Query(stmt string, values ...interface{}) *Query {
 	qry := Query{}

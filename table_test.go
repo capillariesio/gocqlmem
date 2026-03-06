@@ -302,7 +302,7 @@ func TestTableSelect(t *testing.T) {
 	assert.Nil(t, err)
 	cmd, ok = cmds[0].(*CommandSelect)
 	assert.True(t, ok)
-	names, values, err = table.execSelect(cmd)
+	names, values, _, err = table.execSelect(cmd, -1, -1)
 	assert.Nil(t, err)
 	assert.Equal(t, "c1,c2", strings.Join(names, ","))
 	assert.Equal(t, 2, len(values))
@@ -313,7 +313,7 @@ func TestTableSelect(t *testing.T) {
 	assert.Nil(t, err)
 	cmd, ok = cmds[0].(*CommandSelect)
 	assert.True(t, ok)
-	names, values, err = table.execSelect(cmd)
+	names, values, _, err = table.execSelect(cmd, -1, -1)
 	assert.Nil(t, err)
 	assert.Equal(t, "col1,col2,col2", strings.Join(names, ","))
 	assert.Equal(t, 4, len(values))
@@ -326,7 +326,7 @@ func TestTableSelect(t *testing.T) {
 	assert.Nil(t, err)
 	cmd, ok = cmds[0].(*CommandSelect)
 	assert.True(t, ok)
-	names, values, err = table.execSelect(cmd)
+	names, values, _, err = table.execSelect(cmd, -1, -1)
 	assert.Nil(t, err)
 	assert.Equal(t, "c", strings.Join(names, ","))
 	assert.Equal(t, 1, len(values))
@@ -412,4 +412,45 @@ func TestTableUpdate(t *testing.T) {
 	assert.Equal(t, "d", table.ColumnValues[0][4])
 	assert.Equal(t, int64(3), table.ColumnValues[1][4])
 	assert.Equal(t, int64(103), table.ColumnValues[2][4])
+}
+
+func TestTableDelete(t *testing.T) {
+	table := Table{
+		ColumnDefs: []*ColumnDef{
+			{"col1", PrimaryKeyPartition, eval_gocqlmem.DataTypeText, ClusteringOrderAsc},
+			{"col2", PrimaryKeyClustering, eval_gocqlmem.DataTypeBigint, ClusteringOrderDesc},
+			{"col3", PrimaryKeyNone, eval_gocqlmem.DataTypeInt, ClusteringOrderNone},
+		},
+		ColumnValues: [][]any{
+			{"a", "a", "c", "d"},
+			{int64(0), int64(1), int64(3), int64(3)},
+			{int64(1), int64(2), int64(3), int64(4)},
+		},
+		ColumnDefMap: map[string]int{"col1": 0, "col2": 1, "col3": 2},
+	}
+	var cmds []Command
+	var cmd *CommandDelete
+	var err error
+	var ok bool
+	var isApplied bool
+
+	cmds, err = ParseCommands(`DELETE col3 FROM ks1.t WHERE t.col1 = 'a'`)
+	assert.Nil(t, err)
+	cmd, ok = cmds[0].(*CommandDelete)
+	assert.True(t, ok)
+	isApplied, err = table.execDelete(cmd)
+	assert.Nil(t, err)
+	assert.True(t, isApplied)
+	assert.Nil(t, table.ColumnValues[2][0])
+	assert.Nil(t, table.ColumnValues[2][1])
+
+	cmds, err = ParseCommands(`DELETE FROM ks1.t WHERE t.col1 = 'a'`)
+	assert.Nil(t, err)
+	cmd, ok = cmds[0].(*CommandDelete)
+	assert.True(t, ok)
+	isApplied, err = table.execDelete(cmd)
+	assert.Nil(t, err)
+	assert.True(t, isApplied)
+	assert.Equal(t, "c", table.ColumnValues[0][0])
+	assert.Equal(t, "d", table.ColumnValues[0][1])
 }

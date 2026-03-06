@@ -55,11 +55,11 @@ func assertIterMapScan(t *testing.T, expectedRows string, s *Session, q string) 
 
 func assertScanner(t *testing.T, expectedRows string, s *Session, q string) {
 	iter := s.Query(q).Iter()
-	row := make([]interface{}, len(iter.RetrievedNames))
+	row := make([]int64, len(iter.RetrievedNames))
 	sb := strings.Builder{}
 	scanner := iter.Scanner()
 	for scanner.Next() {
-		scanner.Scan(row...)
+		scanner.Scan(row)
 		sb.WriteString(fmt.Sprintf("[%v]", row))
 	}
 	assert.Equal(t, expectedRows, sb.String())

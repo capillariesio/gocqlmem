@@ -369,13 +369,15 @@ func TestUpdate(t *testing.T) {
 }
 
 func TestDelete(t *testing.T) {
-	cmds, err := ParseCommands(`USE ks1;DELETE FROM t1 WHERE f1 = NULL IF EXISTS;DELETE FROM ks2.t1`)
+	cmds, err := ParseCommands(`USE ks1;DELETE t1.col1 FROM t1 WHERE f1 = NULL IF EXISTS;DELETE FROM ks2.t1`)
 	assert.Nil(t, err)
 	cmd, ok := cmds[1].(*CommandDelete)
 	assert.True(t, ok)
 
 	assert.Equal(t, "ks1", cmd.CtxKeyspace)
 	assert.Equal(t, "t1", cmd.TableName)
+
+	assert.Equal(t, "col1", cmd.ColumnsToDelete[0])
 
 	assert.Equal(t, "f1", cmd.WhereExpLexems[0].V)
 	assert.Equal(t, "==", cmd.WhereExpLexems[1].V)

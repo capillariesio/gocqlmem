@@ -488,18 +488,18 @@ func getResultNamesAndExpressions(tableName string, columnDefs []*ColumnDef, sel
 	return resultNames, resultExps, nil
 }
 
-func (t *Table) execSelect(cmd *CommandSelect) ([]string, [][]any, error) {
+func (t *Table) execSelect(cmd *CommandSelect, lastSelectedRowIdx int, maxRows int) ([]string, [][]any, int, error) {
 	t.Lock.RLock()
 	defer t.Lock.RUnlock()
 
 	selectSeq, err := t.getRowSequenceFromColumnDefAndSelectOrderBy(cmd.OrderByFields)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, -1, err
 	}
 
 	resultNames, resultExps, err := getResultNamesAndExpressions(cmd.TableName, t.ColumnDefs, cmd.SelectExpLexems, cmd.SelectExpAsts)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, -1, err
 	}
 
 	var isAgg bool
@@ -509,12 +509,18 @@ func (t *Table) execSelect(cmd *CommandSelect) ([]string, [][]any, error) {
 		if aggEnabled == eval.AggFuncEnabled {
 			aggCtxs[i], err = eval.NewAggEvalCtx(aggFuncType, aggFuncArgs, eval_gocqlmem.GocqlmemEvalFunctions, eval_gocqlmem.GocqlmemEvalConstants, nil)
 			if err != nil {
-				return nil, nil, err
+				return nil, nil, -1, err
 			}
 			isAgg = true
 		} else {
 			aggCtxs[i] = eval.NewPlainEvalCtx(eval_gocqlmem.GocqlmemEvalFunctions, eval_gocqlmem.GocqlmemEvalConstants, nil)
 		}
+	}
+
+	// Ignore paging for agg selects
+	if isAgg {
+		lastSelectedRowIdx = -1
+		maxRows = -1
 	}
 
 	resultRows := [][]any{}
@@ -524,7 +530,18 @@ func (t *Table) execSelect(cmd *CommandSelect) ([]string, [][]any, error) {
 	// In Apache Cassandra, if you use an aggregate function (like SUM, AVG, COUNT, MAX, MIN) and select other non-aggregated columns in the same query,
 	// Cassandra returns the first row it encounters for those non-aggregated columns. So, use isFirstHitAlreadyPassed.
 	var isFirstHitAlreadyPassed bool
+	isWithinRequestedPage := (lastSelectedRowIdx == -1)
+	newLastSelectedRowIdx := -1
+	selectedRowCount := 0
 	for _, i := range selectSeq {
+		if !isWithinRequestedPage {
+			if i == lastSelectedRowIdx {
+				// Next iteratio will hit the first row row we have to return
+				isWithinRequestedPage = true
+			}
+			continue
+		}
+		newLastSelectedRowIdx = i
 		resultRow := []any{}
 		clear(valMap[""])
 		clear(valMap[cmd.TableName])
@@ -539,12 +556,12 @@ func (t *Table) execSelect(cmd *CommandSelect) ([]string, [][]any, error) {
 			eCtx := eval.NewPlainEvalCtx(eval_gocqlmem.GocqlmemEvalFunctions, eval_gocqlmem.GocqlmemEvalConstants, valMap)
 			isIncludeAny, err := eCtx.Eval(cmd.WhereExpAst)
 			if err != nil {
-				return nil, nil, fmt.Errorf("cannot evaluate where expression: %s", err.Error())
+				return nil, nil, -1, fmt.Errorf("cannot evaluate where expression: %s", err.Error())
 			}
 
 			isInclude, ok = isIncludeAny.(bool)
 			if !ok {
-				return nil, nil, fmt.Errorf("where expressions return %T, expected bool", isIncludeAny)
+				return nil, nil, -1, fmt.Errorf("where expressions return %T, expected bool", isIncludeAny)
 			}
 		}
 
@@ -556,7 +573,7 @@ func (t *Table) execSelect(cmd *CommandSelect) ([]string, [][]any, error) {
 					aggCtxs[resultColIdx].SetVars(valMap)
 					val, err = aggCtxs[resultColIdx].Eval(selectExpAst)
 					if err != nil {
-						return nil, nil, err
+						return nil, nil, -1, err
 					}
 				}
 				if !isAgg {
@@ -566,6 +583,11 @@ func (t *Table) execSelect(cmd *CommandSelect) ([]string, [][]any, error) {
 			isFirstHitAlreadyPassed = true
 			if !isAgg {
 				resultRows = append(resultRows, resultRow)
+			}
+
+			selectedRowCount++
+			if selectedRowCount == maxRows {
+				break
 			}
 		}
 	}
@@ -578,7 +600,7 @@ func (t *Table) execSelect(cmd *CommandSelect) ([]string, [][]any, error) {
 		resultRows = append(resultRows, resultRow)
 	}
 
-	return resultNames, resultRows, nil
+	return resultNames, resultRows, newLastSelectedRowIdx, nil
 }
 
 func getInsertedPriKeyColumnNameFromEql(tableName string, columnDefMap map[string]int, exp ast.Expr) (string, error) {
@@ -824,7 +846,61 @@ func (t *Table) execDelete(cmd *CommandDelete) (bool, error) {
 	t.Lock.Lock()
 	defer t.Lock.Unlock()
 
-	// TODO: delete
+	var isApplied bool
+	valMap := eval.VarValuesMap{}
+	valMap[""] = map[string]any{}
+	valMap[cmd.TableName] = map[string]any{}
+	rowsToDelete := []int{}
+	for i := range len(t.ColumnValues[0]) {
+		clear(valMap[""])
+		clear(valMap[cmd.TableName])
+		for colIdx, colDef := range t.ColumnDefs {
+			valMap[""][colDef.Name] = t.ColumnValues[colIdx][i]
+			valMap[cmd.TableName][colDef.Name] = t.ColumnValues[colIdx][i]
+		}
 
-	return false, nil
+		isInclude := true
+		var ok bool
+		if cmd.WhereExpAst != nil {
+			eCtx := eval.NewPlainEvalCtx(eval_gocqlmem.GocqlmemEvalFunctions, eval_gocqlmem.GocqlmemEvalConstants, valMap)
+			isIncludeAny, err := eCtx.Eval(cmd.WhereExpAst)
+			if err != nil {
+				return false, fmt.Errorf("cannot evaluate where expression: %s", err.Error())
+			}
+
+			isInclude, ok = isIncludeAny.(bool)
+			if !ok {
+				return false, fmt.Errorf("where expressions return %T, expected bool", isIncludeAny)
+			}
+		}
+
+		if isInclude {
+			if len(cmd.ColumnsToDelete) == 0 {
+				isApplied = true
+				rowsToDelete = append(rowsToDelete, i)
+			} else {
+				for _, colNameToDelete := range cmd.ColumnsToDelete {
+					colIdxToDelete, ok := t.ColumnDefMap[colNameToDelete]
+					if !ok {
+						return false, fmt.Errorf("cannot find column to delete: %s", colNameToDelete)
+					}
+					if t.ColumnDefs[colIdxToDelete].PrimaryKey != PrimaryKeyNone {
+						return false, fmt.Errorf("cannot delete key column value: %s", colNameToDelete)
+					}
+					isApplied = true
+					t.ColumnValues[colIdxToDelete][i] = nil
+				}
+			}
+		}
+	}
+
+	if len(rowsToDelete) > 0 {
+		for colIdx := range len(t.ColumnValues) {
+			for i := len(rowsToDelete) - 1; i >= 0; i-- {
+				t.ColumnValues[colIdx] = slices.Delete(t.ColumnValues[colIdx], i, i+1)
+			}
+		}
+	}
+
+	return isApplied, nil
 }
