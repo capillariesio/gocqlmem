@@ -6,38 +6,47 @@ import (
 )
 
 type Iter struct {
-	err     error
-	pos     int
-	meta    resultMetadata
-	numRows int
-	next    *nextIter
+	err error
+	pos int
+	//meta    resultMetadata
+	//numRows int
+	//next    *nextIter
 	//host    *HostInfo
 
 	//framer *framer
-	closed int32
+	//closed int32
 
-	//RetrievedTypes  []CqlDataTypeType
-	RetrievedNames  []string
-	RetrievedValues [][]any
-	//LastSelectedRowIdx int
+	retrievedValues      [][]any
+	retrievedColumnInfos []ColumnInfo
+	pagingState          []byte
 }
 
 func (iter *Iter) Columns() []ColumnInfo {
-	return iter.meta.columns
+	return iter.retrievedColumnInfos
+
 }
 
 // func (iter *Iter) readColumn() ([]byte, error) {
 // 	return iter.framer.readBytesInternal()
 // }
 
+// Do not ask me why gocql exposes this
 func (iter *Iter) RowData() (RowData, error) {
 	if iter.err != nil {
 		return RowData{}, iter.err
 	}
 
 	rowData := RowData{
-		Columns: iter.RetrievedNames,
-		Values:  make([]interface{}, len(iter.RetrievedNames)),
+		Columns: columnInfosToColumnNames(iter.retrievedColumnInfos),
+		Values:  make([]interface{}, len(iter.retrievedColumnInfos)),
+	}
+
+	for i := range len(iter.retrievedColumnInfos) {
+		if iter.retrievedColumnInfos[i].TypeInfo == nil {
+			// We could not guess the type this expression, so do not initialize this value
+			continue
+		}
+		rowData.Values[i] = iter.retrievedColumnInfos[i].TypeInfo.Zero()
 	}
 
 	return rowData, nil
@@ -73,31 +82,31 @@ func (iter *Iter) Scanner() Scanner {
 		return nil
 	}
 
-	return &iterScanner{iter: iter, cols: make([]interface{}, len(iter.RetrievedNames))}
+	return &iterScanner{iter: iter, cols: make([]interface{}, len(iter.retrievedColumnInfos))}
 }
 
 func (iter *Iter) checkErrAndNotFound() error {
 	if iter.err != nil {
 		return iter.err
 		//} else if iter.numRows == 0 {
-	} else if len(iter.RetrievedValues) == 0 {
+	} else if len(iter.retrievedValues) == 0 {
 		return errors.New("not found")
 	}
 	return nil
 }
 
 func (iter *Iter) Scan(dest ...interface{}) bool {
-	if iter.err != nil || iter.pos >= len(iter.RetrievedValues) {
+	if iter.err != nil || iter.pos >= len(iter.retrievedValues) {
 		return false
 	}
 
-	if len(dest) != len(iter.RetrievedNames) {
-		iter.err = fmt.Errorf("gocqlmem: not enough columns to scan into: have %d want %d", len(dest), len(iter.RetrievedNames))
+	if len(dest) != len(iter.retrievedColumnInfos) {
+		iter.err = fmt.Errorf("gocqlmem: not enough columns to scan into: have %d want %d", len(dest), len(iter.retrievedColumnInfos))
 		return false
 	}
 
-	for i := range len(iter.RetrievedNames) {
-		dest[i] = iter.RetrievedValues[iter.pos][i]
+	for i := range len(iter.retrievedColumnInfos) {
+		dest[i] = iter.retrievedValues[iter.pos][i]
 	}
 
 	iter.pos++
@@ -153,10 +162,10 @@ func (iter *Iter) MapScan(m map[string]interface{}) bool {
 		return false
 	}
 
-	rowDataValues := make([]any, len(iter.RetrievedNames))
+	rowDataValues := make([]any, len(iter.retrievedColumnInfos))
 	if iter.Scan(rowDataValues...) {
-		for i, name := range iter.RetrievedNames {
-			m[name] = rowDataValues[i]
+		for i, columnInfo := range iter.retrievedColumnInfos {
+			m[columnInfo.Name] = rowDataValues[i]
 		}
 		return true
 	}
@@ -179,5 +188,6 @@ func (iter *Iter) MapScan(m map[string]interface{}) bool {
 }
 
 func (iter *Iter) PageState() []byte {
-	return iter.meta.pagingState
+	//return iter.meta.pagingState
+	return iter.pagingState
 }

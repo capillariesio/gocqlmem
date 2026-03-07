@@ -80,13 +80,13 @@ func (ks *Keyspace) execInsert(cmd *CommandInsert) (bool, error) {
 	return t.execInsert(cmd)
 }
 
-func (ks *Keyspace) execSelect(cmd *CommandSelect, lastSelectedRowIdx int, maxRows int) ([]string, [][]any, int, error) {
+func (ks *Keyspace) execSelect(cmd *CommandSelect, lastSelectedRowIdx int, maxRows int) ([]string, [][]any, []TypeInfo, int, error) {
 	ks.Lock.RLock()
 	defer ks.Lock.RUnlock()
 
 	t, alreadyExists := ks.TableMap[cmd.TableName]
 	if !alreadyExists {
-		return []string{}, [][]any{}, -1, fmt.Errorf("cannot select from  table %s, it was not found in the keyspace %s", cmd.TableName, cmd.GetCtxKeyspace())
+		return []string{}, [][]any{}, []TypeInfo{}, -1, fmt.Errorf("cannot select from  table %s, it was not found in the keyspace %s", cmd.TableName, cmd.GetCtxKeyspace())
 	}
 
 	return t.execSelect(cmd, lastSelectedRowIdx, maxRows)

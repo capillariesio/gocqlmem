@@ -1,4 +1,4 @@
-package eval_gocqlmem
+package gocqlmem
 
 import (
 	"cmp"
@@ -8,95 +8,68 @@ import (
 	"github.com/capillariesio/gocqlmem/eval"
 )
 
-type DataType string
-
-const (
-	DataTypeAscii     DataType = "ascii"
-	DataTypeBigint    DataType = "bigint"
-	DataTypeBlob      DataType = "blob"
-	DataTypeBoolean   DataType = "boolean"
-	DataTypeCounter   DataType = "counter"
-	DataTypeDate      DataType = "date"
-	DataTypeDecimal   DataType = "decimal"
-	DataTypeDouble    DataType = "double"
-	DataTypeDuration  DataType = "duration"
-	DataTypeFloat     DataType = "float"
-	DataTypeInet      DataType = "inet"
-	DataTypeInt       DataType = "int"
-	DataTypeSmallint  DataType = "smallint"
-	DataTypeText      DataType = "text"
-	DataTypeTime      DataType = "time"
-	DataTypeTimestamp DataType = "timestamp"
-	DataTypeTimeuuid  DataType = "timeuuid"
-	DataTypeTinyint   DataType = "tinyint"
-	DataTypeUuid      DataType = "uuid"
-	DataTypeVarchar   DataType = "varchar"
-	DataTypeVarint    DataType = "varint"
-	DataTypeUnknown   DataType = "unknown"
-)
-
-func StringToDataType(s string) DataType {
+func StringToType(s string) Type {
 	switch strings.ToLower(s) {
 	case string(DataTypeAscii):
-		return DataTypeAscii
+		return TypeAscii
 	case string(DataTypeBigint):
-		return DataTypeBigint
+		return TypeBigInt
 	case string(DataTypeBlob):
-		return DataTypeBlob
+		return TypeBlob
 	case string(DataTypeBoolean):
-		return DataTypeBoolean
+		return TypeBoolean
 	case string(DataTypeCounter):
-		return DataTypeCounter
+		return TypeCounter
 	case string(DataTypeDate):
-		return DataTypeDate
+		return TypeDate
 	case string(DataTypeDecimal):
-		return DataTypeDecimal
+		return TypeDecimal
 	case string(DataTypeDouble):
-		return DataTypeDouble
+		return TypeDouble
 	case string(DataTypeDuration):
-		return DataTypeDuration
+		return TypeDuration
 	case string(DataTypeFloat):
-		return DataTypeFloat
+		return TypeFloat
 	case string(DataTypeInet):
-		return DataTypeInet
+		return TypeInet
 	case string(DataTypeInt):
-		return DataTypeInt
+		return TypeInt
 	case string(DataTypeSmallint):
-		return DataTypeSmallint
+		return TypeSmallInt
 	case string(DataTypeText):
-		return DataTypeText
+		return TypeText
 	case string(DataTypeTime):
-		return DataTypeTime
+		return TypeTime
 	case string(DataTypeTimestamp):
-		return DataTypeTimestamp
+		return TypeTimestamp
 	case string(DataTypeTimeuuid):
-		return DataTypeTimeuuid
+		return TypeTimeUUID
 	case string(DataTypeTinyint):
-		return DataTypeTinyint
+		return TypeTinyInt
 	case string(DataTypeUuid):
-		return DataTypeUuid
+		return TypeUUID
 	case string(DataTypeVarchar):
-		return DataTypeVarchar
+		return TypeVarchar
 	case string(DataTypeVarint):
-		return DataTypeVarint
+		return TypeVarint
 	default:
-		return DataTypeUnknown
+		return TypeUnknown
 	}
 }
 
 func IsValidDataType(s string) bool {
-	return StringToDataType(s) != DataTypeUnknown
+	return StringToType(s) != TypeUnknown
 }
 
-func CastToInternalType(val any, cqlType DataType) (any, error) {
+func CastToInternalType(val any, cqlType Type) (any, error) {
 	switch cqlType {
-	case DataTypeInt, DataTypeBigint, DataTypeTinyint, DataTypeSmallint, DataTypeCounter:
+	case TypeInt, TypeBigInt, TypeTinyInt, TypeSmallInt, TypeCounter:
 		return eval.CastToInt64(val)
 
-	case DataTypeDouble, DataTypeFloat:
+	case TypeDouble, TypeFloat:
 		return eval.CastToFloat64(val)
 
-	case DataTypeText, DataTypeVarchar:
+	case TypeText, TypeVarchar:
 		typedVal, ok := any(val).(string)
 		if !ok {
 			return 0, fmt.Errorf("cast %v to string failed", val)
@@ -107,7 +80,7 @@ func CastToInternalType(val any, cqlType DataType) (any, error) {
 	}
 }
 
-func CompareInternalType(left any, right any, cqlType DataType) (int, error) {
+func CompareInternalType(left any, right any, cqlType Type) (int, error) {
 	if left == nil {
 		return 0, fmt.Errorf("left is nil, not allowed in partition/clustering key comparison, dev error")
 	}
@@ -115,7 +88,7 @@ func CompareInternalType(left any, right any, cqlType DataType) (int, error) {
 		return 0, fmt.Errorf("right is nil, not allowed in partition/clustering key comparison, dev error")
 	}
 	switch cqlType {
-	case DataTypeInt, DataTypeBigint, DataTypeTinyint, DataTypeSmallint:
+	case TypeInt, TypeBigInt, TypeTinyInt, TypeSmallInt:
 		typedLeft, okLeft := any(left).(int64)
 		if !okLeft {
 			return 0, fmt.Errorf("left cast %v to int64 failed", left)
@@ -126,7 +99,7 @@ func CompareInternalType(left any, right any, cqlType DataType) (int, error) {
 		}
 		return cmp.Compare(typedLeft, typedRight), nil
 
-	case DataTypeDouble, DataTypeFloat:
+	case TypeDouble, TypeFloat:
 		typedLeft, okLeft := any(left).(float64)
 		if !okLeft {
 			return 0, fmt.Errorf("left cast %v to float64 failed", left)
@@ -136,7 +109,7 @@ func CompareInternalType(left any, right any, cqlType DataType) (int, error) {
 			return 0, fmt.Errorf("right cast %v to float64 failed", right)
 		}
 		return cmp.Compare(typedLeft, typedRight), nil
-	case DataTypeBoolean:
+	case TypeBoolean:
 		typedLeft, okLeft := any(left).(bool)
 		if !okLeft {
 			return 0, fmt.Errorf("left cast %v to bool failed", left)
@@ -152,7 +125,7 @@ func CompareInternalType(left any, right any, cqlType DataType) (int, error) {
 		} else {
 			return 0, nil
 		}
-	case DataTypeText, DataTypeVarchar:
+	case TypeText, TypeVarchar:
 		typedLeft, okLeft := any(left).(string)
 		if !okLeft {
 			return 0, fmt.Errorf("left cast %v to string failed", left)
@@ -164,5 +137,76 @@ func CompareInternalType(left any, right any, cqlType DataType) (int, error) {
 		return cmp.Compare(typedLeft, typedRight), nil
 	default:
 		return 0, fmt.Errorf("unknown column type %v", cqlType)
+	}
+}
+
+func InternalValueToProvidedPtr(src any, destPtr any) error {
+	switch typedSrc := src.(type) {
+	case int64:
+		switch typedDestPtr := destPtr.(type) {
+		case *int64:
+			*typedDestPtr = typedSrc
+		case *int32:
+			*typedDestPtr = int32(typedSrc)
+		case *int16:
+			*typedDestPtr = int16(typedSrc)
+		case *int8:
+			*typedDestPtr = int8(typedSrc)
+		case *int:
+			*typedDestPtr = int(typedSrc)
+		case *uint64:
+			*typedDestPtr = uint64(typedSrc)
+		case *uint32:
+			*typedDestPtr = uint32(typedSrc)
+		case *uint16:
+			*typedDestPtr = uint16(typedSrc)
+		case *uint8:
+			*typedDestPtr = uint8(typedSrc)
+		case *uint:
+			*typedDestPtr = uint(typedSrc)
+		default:
+			return fmt.Errorf("cannot store integer %v(%T) to %T", typedSrc, typedSrc, destPtr)
+		}
+	case float64:
+		switch typedDestPtr := destPtr.(type) {
+		case *float64:
+			*typedDestPtr = typedSrc
+		case *float32:
+			*typedDestPtr = float32(typedSrc)
+		default:
+			return fmt.Errorf("cannot store float %v(%T) to %T", typedSrc, typedSrc, destPtr)
+		}
+	case bool:
+		switch typedDestPtr := destPtr.(type) {
+		case *bool:
+			*typedDestPtr = typedSrc
+		default:
+			return fmt.Errorf("cannot store bool %v(%T) to %T", typedSrc, typedSrc, destPtr)
+		}
+	case string:
+		switch typedDestPtr := destPtr.(type) {
+		case *string:
+			*typedDestPtr = typedSrc
+		default:
+			return fmt.Errorf("cannot store string %v(%T) to %T", typedSrc, typedSrc, destPtr)
+		}
+	default:
+		return fmt.Errorf("cannot store %v(%T) to %T, type not supported", src, src, destPtr)
+	}
+	return nil
+}
+
+func GuessInternalValueType(val any) Type {
+	switch val.(type) {
+	case int64:
+		return TypeInt
+	case float64:
+		return TypeFloat
+	case bool:
+		return TypeBoolean
+	case string:
+		return TypeText
+	default:
+		return TypeUnknown
 	}
 }

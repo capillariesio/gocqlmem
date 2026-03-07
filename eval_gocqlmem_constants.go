@@ -1,4 +1,4 @@
-package eval_gocqlmem
+package gocqlmem
 
 var GocqlmemEvalConstants = map[string]any{
 	"TRUE":      true,

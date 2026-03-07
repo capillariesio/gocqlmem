@@ -7,8 +7,6 @@ import (
 	"go/parser"
 	"regexp"
 	"strings"
-
-	"github.com/capillariesio/gocqlmem/eval_gocqlmem"
 )
 
 type LexemType int
@@ -106,7 +104,7 @@ func (c *CommandDropKeyspace) SetCtxKeyspace(keyspace string) {
 
 type CreateTableColumnDef struct {
 	Name string
-	Type eval_gocqlmem.DataType
+	Type Type
 }
 
 type ColumnSetExp struct {
@@ -576,7 +574,7 @@ func convertInNotInLexemsForAstParser(lexems []*Lexem) ([]*Lexem, error) {
 func findCastAsLexem(lexems []*Lexem) int {
 	// Well, this is a leap of faith
 	for i := range len(lexems) {
-		if lexems[i].T == LexemAs && i >= 3 && eval_gocqlmem.IsValidDataType(strings.ToLower(lexems[i+1].V)) && lexems[i+2].V == ")" {
+		if lexems[i].T == LexemAs && i >= 3 && IsValidDataType(strings.ToLower(lexems[i+1].V)) && lexems[i+2].V == ")" {
 			return i
 		}
 	}
@@ -742,8 +740,8 @@ func getColumnDef(s string) (*CreateTableColumnDef, string, bool, error) {
 		def.Name = l.V
 		l, s = getKeyword(s, `(?i)(BIGINT|BLOB|BOOLEAN|COUNTER|DATE|DECIMAL|DOUBLE|DURATION|FLOAT|INET|INT|SMALLINT|TEXT|TIMEUUID|TIMESTAMP|TIME|TINYINT|UUID|VARCHAR|VARINT)`, true)
 		if l != nil {
-			def.Type = eval_gocqlmem.StringToDataType(l.V)
-			if def.Type == eval_gocqlmem.DataTypeUnknown {
+			def.Type = StringToType(l.V)
+			if def.Type == TypeUnknown {
 				return nil, s, false, fmt.Errorf("cannot parse column def type, unsupported type %s", s)
 			}
 			l, s = getKeyword(s, `(?i)(PRIMARY\s+KEY)`, true)
@@ -967,7 +965,7 @@ func lexemsToString(lexems []*Lexem) (string, string, error) {
 				return "", "", fmt.Errorf("unexpected asterisk lexem (%d,%s), not expected here", l.T, l.V)
 			}
 		case LexemIdent, LexemPointedIdent:
-			if eval_gocqlmem.IsValidDataType(l.V) {
+			if IsValidDataType(l.V) {
 				// CQL data types are UPPERCASE
 				sb.WriteString(fmt.Sprintf("%s", strings.ToUpper(l.V)))
 			} else if i < len(lexems)-1 && lexems[i+1].V == "(" {

@@ -1,6 +1,8 @@
 package gocqlmem
 
-import "fmt"
+import (
+	"fmt"
+)
 
 type Scanner interface {
 	// Next advances the row pointer to point at the next row, the row is valid until
@@ -27,30 +29,24 @@ type iterScanner struct {
 }
 
 func (is *iterScanner) Next() bool {
-	if is.iter.pos >= len(is.iter.RetrievedValues) {
+	if is.iter.pos >= len(is.iter.retrievedValues) {
 		return false
 	}
-	for i := range len(is.iter.RetrievedNames) {
-		is.cols[i] = is.iter.RetrievedValues[is.iter.pos][i]
+	for i := range len(is.iter.retrievedColumnInfos) {
+		is.cols[i] = is.iter.retrievedValues[is.iter.pos][i]
 	}
 	is.iter.pos++
 	return true
 }
 
 func (is *iterScanner) Scan(dest ...interface{}) error {
-	if len(dest) != len(is.cols) {
+	if len(dest) < len(is.cols) {
 		return fmt.Errorf("cannot scan %d columns to dest of length %d", len(is.cols), len(dest))
 	}
 
-	// TODO: implement more conversions
-
 	for i := range len(is.cols) {
-		switch typedDestPtr := dest[i].(type) {
-		case *int64:
-			switch typedColVal := is.cols[i].(type) {
-			case int64:
-				*typedDestPtr = typedColVal
-			}
+		if err := InternalValueToProvidedPtr(is.cols[i], dest[i]); err != nil {
+			return fmt.Errorf("cannot scan column %d: %s", i, err.Error())
 		}
 	}
 	return nil

@@ -32,7 +32,7 @@ func assertIterSliceMap(t *testing.T, expectedRows string, expectedErr string, s
 func assertIterScan(t *testing.T, expectedRows string, s *Session, q string) {
 	iter := s.Query(q).Iter()
 	assert.Nil(t, iter.err)
-	row := make([]interface{}, len(iter.RetrievedNames))
+	row := make([]interface{}, len(iter.retrievedColumnInfos))
 	sb := strings.Builder{}
 	for iter.Scan(row...) {
 		sb.WriteString(fmt.Sprintf("[%v]", row))
@@ -44,8 +44,8 @@ func assertIterMapScan(t *testing.T, expectedRows string, s *Session, q string) 
 	iter := s.Query(q).Iter()
 	sb := strings.Builder{}
 	row := map[string]interface{}{}
-	for _, name := range iter.RetrievedNames {
-		row[name] = nil
+	for _, colInfo := range iter.retrievedColumnInfos {
+		row[colInfo.Name] = nil
 	}
 	for iter.MapScan(row) {
 		sb.WriteString(fmt.Sprintf("[%v]", row))
@@ -55,7 +55,7 @@ func assertIterMapScan(t *testing.T, expectedRows string, s *Session, q string) 
 
 func assertScanner(t *testing.T, expectedRows string, s *Session, q string) {
 	iter := s.Query(q).Iter()
-	row := make([]int64, len(iter.RetrievedNames))
+	row := make([]int64, len(iter.retrievedColumnInfos))
 	sb := strings.Builder{}
 	scanner := iter.Scanner()
 	for scanner.Next() {

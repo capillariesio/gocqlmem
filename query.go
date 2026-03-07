@@ -55,9 +55,14 @@ func (q *Query) Iter() *Iter {
 			return &Iter{err: err}
 		}
 		return &Iter{
-			//RetrievedTypes:  []CqlDataTypeType{CqlDataTypeBool},
-			RetrievedNames:  []string{"[applied]"},
-			RetrievedValues: [][]any{{isApplied}}}
+			retrievedColumnInfos: []ColumnInfo{
+				{
+					Keyspace: cmd.GetCtxKeyspace(),
+					Table:    cmd.TableName,
+					Name:     "[applied]",
+					TypeInfo: newScalarType(TypeBoolean),
+				}},
+			retrievedValues: [][]any{{isApplied}}}
 	case *CommandSelect:
 		var lastSelectedRowIdx int32
 		if len(q.pageState) == 0 {
@@ -68,7 +73,7 @@ func (q *Query) Iter() *Iter {
 				return &Iter{err: fmt.Errorf("cannot convert page state %v to int: %s", q.pageState, err.Error())}
 			}
 		}
-		names, values, newLastSelectedRowIdx, err := q.session.execSelect(cmd, int(lastSelectedRowIdx), q.pageSize)
+		names, values, typeInfos, newLastSelectedRowIdx, err := q.session.execSelect(cmd, int(lastSelectedRowIdx), q.pageSize)
 		if err != nil {
 			return &Iter{err: err}
 		}
@@ -79,19 +84,23 @@ func (q *Query) Iter() *Iter {
 		}
 
 		return &Iter{
-			//RetrievedTypes:  types,
-			meta:            resultMetadata{pagingState: buf.Bytes()},
-			RetrievedNames:  names,
-			RetrievedValues: values}
+			pagingState:          buf.Bytes(),
+			retrievedColumnInfos: namesAndTypeInfosTocolumnInfos(cmd.GetCtxKeyspace(), cmd.TableName, names, typeInfos),
+			retrievedValues:      values}
 	case *CommandUpdate:
 		isApplied, err := q.session.execUpdate(cmd)
 		if err != nil {
 			return &Iter{err: err}
 		}
 		return &Iter{
-			//RetrievedTypes:  []CqlDataTypeType{CqlDataTypeBool},
-			RetrievedNames:  []string{"[applied]"},
-			RetrievedValues: [][]any{{isApplied}}}
+			retrievedColumnInfos: []ColumnInfo{
+				{
+					Keyspace: cmd.GetCtxKeyspace(),
+					Table:    cmd.TableName,
+					Name:     "[applied]",
+					TypeInfo: newScalarType(TypeBoolean),
+				}},
+			retrievedValues: [][]any{{isApplied}}}
 
 	case *CommandDelete:
 		isApplied, err := q.session.execDelete(cmd)
@@ -99,9 +108,14 @@ func (q *Query) Iter() *Iter {
 			return &Iter{err: err}
 		}
 		return &Iter{
-			//RetrievedTypes:  []CqlDataTypeType{CqlDataTypeBool},
-			RetrievedNames:  []string{"[applied]"},
-			RetrievedValues: [][]any{{isApplied}}}
+			retrievedColumnInfos: []ColumnInfo{
+				{
+					Keyspace: cmd.GetCtxKeyspace(),
+					Table:    cmd.TableName,
+					Name:     "[applied]",
+					TypeInfo: newScalarType(TypeBoolean),
+				}},
+			retrievedValues: [][]any{{isApplied}}}
 
 	default:
 		return &Iter{err: fmt.Errorf("Iter() does not support cmd %v", cmd)}

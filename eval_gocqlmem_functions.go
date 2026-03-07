@@ -1,4 +1,4 @@
-package eval_gocqlmem
+package gocqlmem
 
 import (
 	"fmt"
@@ -36,7 +36,7 @@ func callCast(args []any) (any, error) {
 		return nil, err
 	}
 
-	dataType, ok := args[1].(DataType)
+	dataType, ok := args[1].(CqlDataType)
 	if !ok {
 		return nil, fmt.Errorf("cannot convert cast() arg %v to DataType", args[1])
 	}

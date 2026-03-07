@@ -3,7 +3,6 @@ package gocqlmem
 import (
 	"testing"
 
-	"github.com/capillariesio/gocqlmem/eval_gocqlmem"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -62,9 +61,9 @@ func TestCreateTable(t *testing.T) {
 	assert.Equal(t, "t1", cr.TableName)
 
 	assert.Equal(t, "f1", cr.ColumnDefs[0].Name)
-	assert.Equal(t, eval_gocqlmem.DataTypeText, cr.ColumnDefs[0].Type)
+	assert.Equal(t, TypeText, cr.ColumnDefs[0].Type)
 	assert.Equal(t, "f2", cr.ColumnDefs[1].Name)
-	assert.Equal(t, eval_gocqlmem.DataTypeTimestamp, cr.ColumnDefs[1].Type)
+	assert.Equal(t, TypeTimestamp, cr.ColumnDefs[1].Type)
 
 	assert.Equal(t, "f1", cr.PartitionKeyColumns[0])
 	assert.Equal(t, "f2", cr.PartitionKeyColumns[1])
@@ -87,7 +86,7 @@ func TestCreateTable(t *testing.T) {
 	assert.Equal(t, "t1", cr.TableName)
 
 	assert.Equal(t, "f1", cr.ColumnDefs[0].Name)
-	assert.Equal(t, eval_gocqlmem.DataTypeText, cr.ColumnDefs[0].Type)
+	assert.Equal(t, TypeText, cr.ColumnDefs[0].Type)
 
 	assert.Equal(t, "f1", cr.PartitionKeyColumns[0])
 
@@ -101,7 +100,7 @@ func TestCreateTable(t *testing.T) {
 	assert.Equal(t, "t1", cr.TableName)
 
 	assert.Equal(t, "f1", cr.ColumnDefs[0].Name)
-	assert.Equal(t, eval_gocqlmem.DataTypeText, cr.ColumnDefs[0].Type)
+	assert.Equal(t, TypeText, cr.ColumnDefs[0].Type)
 
 	assert.Equal(t, "f1", cr.PartitionKeyColumns[0])
 	assert.Equal(t, "f2", cr.ClusteringKeyColumns[0])
