@@ -19,7 +19,7 @@ func sliceMapRowsToString(rows []map[string]any) string {
 	return sb.String()
 }
 
-func assertIterSliceMap(t *testing.T, expectedRows string, expectedErr string, s *Session, q string) {
+func assertIterSliceMap(t *testing.T, expectedRows string, expectedErr string, s Session, q string) {
 	rows, err := s.Query(q).Iter().SliceMap()
 	if expectedErr == "" {
 		assert.Nil(t, err)
@@ -29,10 +29,10 @@ func assertIterSliceMap(t *testing.T, expectedRows string, expectedErr string, s
 	assert.Equal(t, expectedRows, sliceMapRowsToString(rows))
 }
 
-func assertIterScan(t *testing.T, expectedRows string, s *Session, q string) {
+func assertIterScan(t *testing.T, expectedRows string, s Session, q string) {
 	iter := s.Query(q).Iter()
-	assert.Nil(t, iter.err)
-	row := make([]interface{}, len(iter.retrievedColumnInfos))
+	assert.Nil(t, iter.Err())
+	row := make([]interface{}, len(iter.Columns()))
 	sb := strings.Builder{}
 	for iter.Scan(row...) {
 		sb.WriteString(fmt.Sprintf("[%v]", row))
@@ -40,11 +40,11 @@ func assertIterScan(t *testing.T, expectedRows string, s *Session, q string) {
 	assert.Equal(t, expectedRows, sb.String())
 }
 
-func assertIterMapScan(t *testing.T, expectedRows string, s *Session, q string) {
+func assertIterMapScan(t *testing.T, expectedRows string, s Session, q string) {
 	iter := s.Query(q).Iter()
 	sb := strings.Builder{}
 	row := map[string]interface{}{}
-	for _, colInfo := range iter.retrievedColumnInfos {
+	for _, colInfo := range iter.Columns() {
 		row[colInfo.Name] = nil
 	}
 	for iter.MapScan(row) {
@@ -53,9 +53,9 @@ func assertIterMapScan(t *testing.T, expectedRows string, s *Session, q string) 
 	assert.Equal(t, expectedRows, sb.String())
 }
 
-func assertScanner(t *testing.T, expectedRows string, s *Session, q string) {
+func assertScanner(t *testing.T, expectedRows string, s Session, q string) {
 	iter := s.Query(q).Iter()
-	row := make([]int64, len(iter.retrievedColumnInfos))
+	row := make([]int64, len(iter.Columns()))
 	sb := strings.Builder{}
 	scanner := iter.Scanner()
 	for scanner.Next() {
@@ -65,7 +65,7 @@ func assertScanner(t *testing.T, expectedRows string, s *Session, q string) {
 	assert.Equal(t, expectedRows, sb.String())
 }
 
-func assertUpserMapScanCas(t *testing.T, isApplyExpected bool, s *Session, q string, existingRowMap map[string]interface{}) {
+func assertUpserMapScanCas(t *testing.T, isApplyExpected bool, s Session, q string, existingRowMap map[string]interface{}) {
 	isApplied, err := s.Query(q).MapScanCAS(existingRowMap)
 	assert.Nil(t, err)
 	assert.Equal(t, isApplyExpected, isApplied)

@@ -7,6 +7,8 @@ import (
 	"go/parser"
 	"regexp"
 	"strings"
+
+	gocql "github.com/apache/cassandra-gocql-driver/v2"
 )
 
 type LexemType int
@@ -103,8 +105,8 @@ func (c *CommandDropKeyspace) SetCtxKeyspace(keyspace string) {
 }
 
 type CreateTableColumnDef struct {
-	Name string
-	Type Type
+	Name       string
+	ColumnType gocql.Type
 }
 
 type ColumnSetExp struct {
@@ -574,8 +576,10 @@ func convertInNotInLexemsForAstParser(lexems []*Lexem) ([]*Lexem, error) {
 func findCastAsLexem(lexems []*Lexem) int {
 	// Well, this is a leap of faith
 	for i := range len(lexems) {
-		if lexems[i].T == LexemAs && i >= 3 && IsValidDataType(strings.ToLower(lexems[i+1].V)) && lexems[i+2].V == ")" {
-			return i
+		if lexems[i].T == LexemAs {
+			if i >= 3 && len(lexems) >= i+3 && isValidDataType(strings.ToLower(lexems[i+1].V)) && lexems[i+2].V == ")" {
+				return i
+			}
 		}
 	}
 	// No candidates found, give up
@@ -740,10 +744,11 @@ func getColumnDef(s string) (*CreateTableColumnDef, string, bool, error) {
 		def.Name = l.V
 		l, s = getKeyword(s, `(?i)(BIGINT|BLOB|BOOLEAN|COUNTER|DATE|DECIMAL|DOUBLE|DURATION|FLOAT|INET|INT|SMALLINT|TEXT|TIMEUUID|TIMESTAMP|TIME|TINYINT|UUID|VARCHAR|VARINT)`, true)
 		if l != nil {
-			def.Type = StringToType(l.V)
-			if def.Type == TypeUnknown {
-				return nil, s, false, fmt.Errorf("cannot parse column def type, unsupported type %s", s)
+			typ, err := stringToType(l.V)
+			if err != nil {
+				return nil, s, false, fmt.Errorf("cannot parse column def type: %s", err.Error())
 			}
+			def.ColumnType = typ
 			l, s = getKeyword(s, `(?i)(PRIMARY\s+KEY)`, true)
 			if l != nil {
 				// This field def has PRIMARY KEY tag right in it
@@ -943,14 +948,10 @@ func lexemsToString(lexems []*Lexem) (string, string, error) {
 	for i, l := range lexems {
 		// This handles SELECT expr AS synt_field_name
 		if l.T == LexemAs {
-			if len(lexems) != i+2 {
-				return "", "", fmt.Errorf("unexpected select exp with AS length, expected %d, got %d", i+2, len(lexems))
+			if len(lexems) == i+2 && lexems[i+1].T == LexemIdent {
+				as = lexems[i+1].V
+				break
 			}
-			if lexems[i+1].T != LexemIdent {
-				return "", "", fmt.Errorf("unexpected select exp with AS last lexem, expected ident, got (%d,%s)", lexems[i+1].T, lexems[i+1].V)
-			}
-			as = lexems[i+1].V
-			break
 		}
 		switch l.T {
 		case LexemComma, LexemArithmeticOp, LexemLogicalOp, LexemBoolLiteral, LexemNumberLiteral, LexemParenthesis:
@@ -965,7 +966,7 @@ func lexemsToString(lexems []*Lexem) (string, string, error) {
 				return "", "", fmt.Errorf("unexpected asterisk lexem (%d,%s), not expected here", l.T, l.V)
 			}
 		case LexemIdent, LexemPointedIdent:
-			if IsValidDataType(l.V) {
+			if isValidDataType(l.V) {
 				// CQL data types are UPPERCASE
 				sb.WriteString(fmt.Sprintf("%s", strings.ToUpper(l.V)))
 			} else if i < len(lexems)-1 && lexems[i+1].V == "(" {
@@ -976,6 +977,8 @@ func lexemsToString(lexems []*Lexem) (string, string, error) {
 			}
 		case LexemStringLiteral:
 			sb.WriteString(fmt.Sprintf("`%s`", l.V))
+		// case LexemAs: Not used?
+		// 	sb.WriteString(",")
 		case LexemNull:
 			sb.WriteString("NULL") // GocqlmemEvalConstants will take care of this
 		case LexemSemicolon, LexemCqlOp, LexemKeyword:

@@ -5,21 +5,22 @@ import (
 	"strings"
 	"testing"
 
+	gocql "github.com/apache/cassandra-gocql-driver/v2"
 	"github.com/stretchr/testify/assert"
 )
 
 func TestTableSelectOrderBy(t *testing.T) {
-	table := Table{
-		ColumnDefs: []*ColumnDef{
-			{"col1", PrimaryKeyPartition, TypeText, ClusteringOrderAsc},
-			{"col2", PrimaryKeyClustering, TypeBigInt, ClusteringOrderDesc},
-			{"col3", PrimaryKeyNone, TypeBoolean, ClusteringOrderNone},
+	table := tableStore{
+		columnDefs: []*columnDef{
+			{"col1", PrimaryKeyPartition, gocql.TypeText, ClusteringOrderAsc},
+			{"col2", PrimaryKeyClustering, gocql.TypeBigInt, ClusteringOrderDesc},
+			{"col3", PrimaryKeyNone, gocql.TypeBoolean, ClusteringOrderNone},
 		},
-		ColumnValues: [][]any{
+		columnValues: [][]any{
 			{"a", "a", "b", "c"},
 			{3, 2, 1, 1},
 		},
-		ColumnDefMap: map[string]int{"col1": 0, "col2": 1},
+		columnDefMap: map[string]int{"col1": 0, "col2": 1},
 	}
 
 	seq, err := table.getRowSequenceFromColumnDefAndSelectOrderBy([]*OrderByField{
@@ -75,150 +76,164 @@ func TestTableSelectOrderBy(t *testing.T) {
 
 func TestRowIndexFromColumnDefAndInsert(t *testing.T) {
 	var idx int
+	var existingIdx int
 	var isExists bool
 	var err error
 
-	var columnDefs []*ColumnDef
+	var columnDefs []*columnDef
 	var columnValues [][]any
 
 	// ASC ASC
 
-	columnDefs = []*ColumnDef{
-		{"col1", PrimaryKeyPartition, TypeText, ClusteringOrderAsc},
-		{"col2", PrimaryKeyClustering, TypeBigInt, ClusteringOrderAsc},
-		{"col3", PrimaryKeyNone, TypeBoolean, ClusteringOrderNone},
+	columnDefs = []*columnDef{
+		{"col1", PrimaryKeyPartition, gocql.TypeText, ClusteringOrderAsc},
+		{"col2", PrimaryKeyClustering, gocql.TypeBigInt, ClusteringOrderAsc},
+		{"col3", PrimaryKeyNone, gocql.TypeBoolean, ClusteringOrderNone},
 	}
 	columnValues = [][]any{
 		{"a", "a", "c", "d"},
 		{int64(0), int64(1), int64(3), int64(3)},
 	}
 
-	idx, isExists, err = getRowIndexFromColumnDefAndInsert(columnValues, columnDefs, map[string]any{
+	idx, existingIdx, isExists, err = getRowIndexFromColumnDefAndInsert(columnValues, columnDefs, map[string]any{
 		"col1": "a",
 		"col2": int64(10),
 		"col3": true})
 	assert.Nil(t, err)
 	assert.False(t, isExists)
+	assert.Equal(t, -1, existingIdx)
 	assert.Equal(t, 2, idx)
 
-	idx, isExists, err = getRowIndexFromColumnDefAndInsert(columnValues, columnDefs, map[string]any{
+	idx, existingIdx, isExists, err = getRowIndexFromColumnDefAndInsert(columnValues, columnDefs, map[string]any{
 		"col1": "a",
 		"col2": int64(0),
 		"col3": true})
 	assert.Nil(t, err)
 	assert.True(t, isExists)
+	assert.Equal(t, 0, existingIdx)
 	assert.Equal(t, 1, idx)
 
-	idx, isExists, err = getRowIndexFromColumnDefAndInsert(columnValues, columnDefs, map[string]any{
+	idx, existingIdx, isExists, err = getRowIndexFromColumnDefAndInsert(columnValues, columnDefs, map[string]any{
 		"col1": "e",
 		"col2": int64(10000),
 		"col3": true})
 	assert.Nil(t, err)
 	assert.False(t, isExists)
+	assert.Equal(t, -1, existingIdx)
 	assert.Equal(t, 4, idx)
 
-	idx, isExists, err = getRowIndexFromColumnDefAndInsert(columnValues, columnDefs, map[string]any{
+	idx, existingIdx, isExists, err = getRowIndexFromColumnDefAndInsert(columnValues, columnDefs, map[string]any{
 		"col1": "A",
 		"col2": int64(0),
 		"col3": true})
 	assert.Nil(t, err)
 	assert.False(t, isExists)
+	assert.Equal(t, -1, existingIdx)
 	assert.Equal(t, 0, idx)
 
-	idx, isExists, err = getRowIndexFromColumnDefAndInsert(columnValues, columnDefs, map[string]any{
+	idx, existingIdx, isExists, err = getRowIndexFromColumnDefAndInsert(columnValues, columnDefs, map[string]any{
 		"col1": "b",
 		"col2": int64(10000),
 		"col3": true})
 	assert.Nil(t, err)
 	assert.False(t, isExists)
+	assert.Equal(t, -1, existingIdx)
 	assert.Equal(t, 2, idx)
 
 	// ASC DESC
 
-	columnDefs = []*ColumnDef{
-		{"col1", PrimaryKeyPartition, TypeText, ClusteringOrderAsc},
-		{"col2", PrimaryKeyClustering, TypeBigInt, ClusteringOrderDesc},
-		{"col3", PrimaryKeyNone, TypeBoolean, ClusteringOrderNone},
+	columnDefs = []*columnDef{
+		{"col1", PrimaryKeyPartition, gocql.TypeText, ClusteringOrderAsc},
+		{"col2", PrimaryKeyClustering, gocql.TypeBigInt, ClusteringOrderDesc},
+		{"col3", PrimaryKeyNone, gocql.TypeBoolean, ClusteringOrderNone},
 	}
 	columnValues = [][]any{
 		{"a", "a", "c", "d"},
 		{int64(3), int64(3), int64(1), int64(0)},
 	}
 
-	idx, isExists, err = getRowIndexFromColumnDefAndInsert(columnValues, columnDefs, map[string]any{
+	idx, existingIdx, isExists, err = getRowIndexFromColumnDefAndInsert(columnValues, columnDefs, map[string]any{
 		"col1": "a",
 		"col2": int64(10),
 		"col3": true})
 	assert.Nil(t, err)
 	assert.False(t, isExists)
+	assert.Equal(t, -1, existingIdx)
 	assert.Equal(t, 0, idx)
 
-	idx, isExists, err = getRowIndexFromColumnDefAndInsert(columnValues, columnDefs, map[string]any{
+	idx, existingIdx, isExists, err = getRowIndexFromColumnDefAndInsert(columnValues, columnDefs, map[string]any{
 		"col1": "a",
 		"col2": int64(3),
 		"col3": true})
 	assert.Nil(t, err)
 	assert.True(t, isExists)
+	assert.Equal(t, 1, existingIdx)
 	assert.Equal(t, 2, idx)
 
-	idx, isExists, err = getRowIndexFromColumnDefAndInsert(columnValues, columnDefs, map[string]any{
+	idx, existingIdx, isExists, err = getRowIndexFromColumnDefAndInsert(columnValues, columnDefs, map[string]any{
 		"col1": "c",
 		"col2": int64(10000),
 		"col3": true})
 	assert.Nil(t, err)
 	assert.False(t, isExists)
+	assert.Equal(t, -1, existingIdx)
 	assert.Equal(t, 2, idx)
 
-	idx, isExists, err = getRowIndexFromColumnDefAndInsert(columnValues, columnDefs, map[string]any{
+	idx, existingIdx, isExists, err = getRowIndexFromColumnDefAndInsert(columnValues, columnDefs, map[string]any{
 		"col1": "c",
 		"col2": int64(1),
 		"col3": true})
 	assert.Nil(t, err)
 	assert.True(t, isExists)
+	assert.Equal(t, 2, existingIdx)
 	assert.Equal(t, 3, idx)
 
-	idx, isExists, err = getRowIndexFromColumnDefAndInsert(columnValues, columnDefs, map[string]any{
+	idx, existingIdx, isExists, err = getRowIndexFromColumnDefAndInsert(columnValues, columnDefs, map[string]any{
 		"col1": "d",
 		"col2": int64(-1),
 		"col3": true})
 	assert.Nil(t, err)
 	assert.False(t, isExists)
+	assert.Equal(t, -1, existingIdx)
 	assert.Equal(t, 4, idx)
 
 	// ASC DESC empty
 
-	columnDefs = []*ColumnDef{
-		{"col1", PrimaryKeyPartition, TypeText, ClusteringOrderAsc},
-		{"col2", PrimaryKeyClustering, TypeBigInt, ClusteringOrderDesc},
-		{"col3", PrimaryKeyNone, TypeBoolean, ClusteringOrderNone},
+	columnDefs = []*columnDef{
+		{"col1", PrimaryKeyPartition, gocql.TypeText, ClusteringOrderAsc},
+		{"col2", PrimaryKeyClustering, gocql.TypeBigInt, ClusteringOrderDesc},
+		{"col3", PrimaryKeyNone, gocql.TypeBoolean, ClusteringOrderNone},
 	}
 	columnValues = [][]any{
 		{},
 		{},
 	}
 
-	idx, isExists, err = getRowIndexFromColumnDefAndInsert(columnValues, columnDefs, map[string]any{
+	idx, existingIdx, isExists, err = getRowIndexFromColumnDefAndInsert(columnValues, columnDefs, map[string]any{
 		"col1": "a",
 		"col2": int64(1),
 		"col3": true})
 	assert.Nil(t, err)
 	assert.False(t, isExists)
+	assert.Equal(t, -1, existingIdx)
 	assert.Equal(t, 0, idx)
 }
 
 func TestTableInsert(t *testing.T) {
-	table := Table{
-		ColumnDefs: []*ColumnDef{
-			{"col1", PrimaryKeyPartition, TypeText, ClusteringOrderAsc},
-			{"col2", PrimaryKeyClustering, TypeBigInt, ClusteringOrderDesc},
-			{"col3", PrimaryKeyNone, TypeBoolean, ClusteringOrderNone},
+	table := tableStore{
+		columnDefs: []*columnDef{
+			{"col1", PrimaryKeyPartition, gocql.TypeText, ClusteringOrderAsc},
+			{"col2", PrimaryKeyClustering, gocql.TypeBigInt, ClusteringOrderDesc},
+			{"col3", PrimaryKeyNone, gocql.TypeBoolean, ClusteringOrderNone},
 		},
-		ColumnValues: [][]any{[]any{}, []any{}, []any{}},
-		ColumnDefMap: map[string]int{"col1": 0, "col2": 1, "col3": 2},
+		columnValues: [][]any{[]any{}, []any{}, []any{}},
+		columnDefMap: map[string]int{"col1": 0, "col2": 1, "col3": 2},
 	}
 
 	var cmd CommandInsert
 	var isApplied bool
+	var existingColumnInfos []gocql.ColumnInfo
+	var existingValues [][]any
 	var err error
 
 	cmd = CommandInsert{
@@ -227,68 +242,88 @@ func TestTableInsert(t *testing.T) {
 		IfNotExists:  false,
 	}
 
-	isApplied, err = table.execInsert(&cmd)
+	isApplied, existingColumnInfos, existingValues, err = table.execInsert(&cmd)
 	assert.Nil(t, err)
 	assert.True(t, isApplied)
-	assert.Equal(t, "a", table.ColumnValues[0][0])
-	assert.Equal(t, int64(1), table.ColumnValues[1][0])
-	assert.Equal(t, nil, table.ColumnValues[2][0])
+	assert.Nil(t, existingColumnInfos)
+	assert.Nil(t, existingValues)
+	assert.Equal(t, "a", table.columnValues[0][0])
+	assert.Equal(t, int64(1), table.columnValues[1][0])
+	assert.Equal(t, nil, table.columnValues[2][0])
 
 	cmd = CommandInsert{
 		ColumnNames:  []string{"col1", "col2", "col3"},
 		ColumnValues: []*Lexem{{LexemStringLiteral, "a"}, {LexemNumberLiteral, "2"}, {LexemBoolLiteral, "TRUE"}},
 		IfNotExists:  false,
 	}
-	isApplied, err = table.execInsert(&cmd)
+	isApplied, existingColumnInfos, existingValues, err = table.execInsert(&cmd)
 	assert.Nil(t, err)
 	assert.True(t, isApplied)
-	assert.Equal(t, "a", table.ColumnValues[0][0])
-	assert.Equal(t, int64(2), table.ColumnValues[1][0])
-	assert.Equal(t, true, table.ColumnValues[2][0])
-	assert.Equal(t, "a", table.ColumnValues[0][1])
-	assert.Equal(t, int64(1), table.ColumnValues[1][1])
-	assert.Equal(t, nil, table.ColumnValues[2][1])
+	assert.Equal(t, "a", table.columnValues[0][0])
+	assert.Equal(t, int64(2), table.columnValues[1][0])
+	assert.Equal(t, true, table.columnValues[2][0])
+	assert.Equal(t, "a", table.columnValues[0][1])
+	assert.Equal(t, int64(1), table.columnValues[1][1])
+	assert.Equal(t, nil, table.columnValues[2][1])
 
 	cmd = CommandInsert{
 		ColumnNames:  []string{"col1", "col2", "col3"},
 		ColumnValues: []*Lexem{{LexemStringLiteral, "b"}, {LexemNumberLiteral, "0"}, {LexemBoolLiteral, "TRUE"}},
 		IfNotExists:  false,
 	}
-	isApplied, err = table.execInsert(&cmd)
+	isApplied, existingColumnInfos, existingValues, err = table.execInsert(&cmd)
 	assert.Nil(t, err)
 	assert.True(t, isApplied)
-	assert.Equal(t, "a", table.ColumnValues[0][0])
-	assert.Equal(t, int64(2), table.ColumnValues[1][0])
-	assert.Equal(t, true, table.ColumnValues[2][0])
-	assert.Equal(t, "a", table.ColumnValues[0][1])
-	assert.Equal(t, int64(1), table.ColumnValues[1][1])
-	assert.Equal(t, nil, table.ColumnValues[2][1])
-	assert.Equal(t, "b", table.ColumnValues[0][2])
-	assert.Equal(t, int64(0), table.ColumnValues[1][2])
-	assert.Equal(t, true, table.ColumnValues[2][2])
+	assert.Equal(t, "a", table.columnValues[0][0])
+	assert.Equal(t, int64(2), table.columnValues[1][0])
+	assert.Equal(t, true, table.columnValues[2][0])
+	assert.Equal(t, "a", table.columnValues[0][1])
+	assert.Equal(t, int64(1), table.columnValues[1][1])
+	assert.Equal(t, nil, table.columnValues[2][1])
+	assert.Equal(t, "b", table.columnValues[0][2])
+	assert.Equal(t, int64(0), table.columnValues[1][2])
+	assert.Equal(t, true, table.columnValues[2][2])
 
 	cmd.IfNotExists = true
-	isApplied, err = table.execInsert(&cmd)
+	isApplied, existingColumnInfos, existingValues, err = table.execInsert(&cmd)
 	assert.Nil(t, err)
 	assert.False(t, isApplied)
+	assert.Equal(t, 3, len(existingColumnInfos))
+	assert.Equal(t, "col1", existingColumnInfos[0].Name)
+	assert.Equal(t, "col2", existingColumnInfos[1].Name)
+	assert.Equal(t, "col3", existingColumnInfos[2].Name)
+	assert.Equal(t, 1, len(existingValues))
+	assert.Equal(t, 3, len(existingValues[0]))
+	assert.Equal(t, "b", existingValues[0][0])
+	assert.Equal(t, int64(0), existingValues[0][1])
+	assert.Equal(t, true, existingValues[0][2])
 
 	cmd.IfNotExists = false
-	isApplied, err = table.execInsert(&cmd)
+	isApplied, existingColumnInfos, existingValues, err = table.execInsert(&cmd)
 	assert.Contains(t, err.Error(), "cannot upsert duplicate map[col1:b col2:0 col3:true]")
 	assert.False(t, isApplied)
+	assert.Equal(t, 3, len(existingColumnInfos))
+	assert.Equal(t, "col1", existingColumnInfos[0].Name)
+	assert.Equal(t, "col2", existingColumnInfos[1].Name)
+	assert.Equal(t, "col3", existingColumnInfos[2].Name)
+	assert.Equal(t, 1, len(existingValues))
+	assert.Equal(t, 3, len(existingValues[0]))
+	assert.Equal(t, "b", existingValues[0][0])
+	assert.Equal(t, int64(0), existingValues[0][1])
+	assert.Equal(t, true, existingValues[0][2])
 }
 
 func TestTableSelect(t *testing.T) {
-	table := Table{
-		ColumnDefs: []*ColumnDef{
-			{"col1", PrimaryKeyPartition, TypeText, ClusteringOrderAsc},
-			{"col2", PrimaryKeyClustering, TypeBigInt, ClusteringOrderDesc},
+	table := tableStore{
+		columnDefs: []*columnDef{
+			{"col1", PrimaryKeyPartition, gocql.TypeText, ClusteringOrderAsc},
+			{"col2", PrimaryKeyClustering, gocql.TypeBigInt, ClusteringOrderDesc},
 		},
-		ColumnValues: [][]any{
+		columnValues: [][]any{
 			{"a", "a", "c", "d"},
 			{int64(0), int64(1), int64(3), int64(3)},
 		},
-		ColumnDefMap: map[string]int{"col1": 0, "col2": 1, "col3": 2},
+		columnDefMap: map[string]int{"col1": 0, "col2": 1, "col3": 2},
 	}
 	var cmds []Command
 	var cmd *CommandSelect
@@ -333,23 +368,25 @@ func TestTableSelect(t *testing.T) {
 }
 
 func TestTableUpdate(t *testing.T) {
-	table := Table{
-		ColumnDefs: []*ColumnDef{
-			{"col1", PrimaryKeyPartition, TypeText, ClusteringOrderAsc},
-			{"col2", PrimaryKeyClustering, TypeBigInt, ClusteringOrderDesc},
-			{"col3", PrimaryKeyNone, TypeBigInt, ClusteringOrderNone},
+	table := tableStore{
+		columnDefs: []*columnDef{
+			{"col1", PrimaryKeyPartition, gocql.TypeText, ClusteringOrderAsc},
+			{"col2", PrimaryKeyClustering, gocql.TypeBigInt, ClusteringOrderDesc},
+			{"col3", PrimaryKeyNone, gocql.TypeBigInt, ClusteringOrderNone},
 		},
-		ColumnValues: [][]any{
+		columnValues: [][]any{
 			{"a", "a", "c", "d"},
 			{int64(0), int64(1), int64(3), int64(3)},
 			{int64(100), int64(101), int64(103), int64(103)},
 		},
-		ColumnDefMap: map[string]int{"col1": 0, "col2": 1, "col3": 2},
+		columnDefMap: map[string]int{"col1": 0, "col2": 1, "col3": 2},
 	}
 
 	var cmds []Command
 	var cmd *CommandUpdate
 	var isApplied bool
+	var existingColumnInfos []gocql.ColumnInfo
+	var existingValues [][]any
 	var err error
 	var ok bool
 
@@ -358,26 +395,27 @@ func TestTableUpdate(t *testing.T) {
 	cmd, ok = cmds[0].(*CommandUpdate)
 	assert.True(t, ok)
 
-	isApplied, err = table.execUpdate(cmd)
+	isApplied, existingColumnInfos, existingValues, err = table.execUpdate(cmd)
 	assert.Nil(t, err)
-
 	assert.True(t, isApplied)
+	assert.Nil(t, existingColumnInfos)
+	assert.Nil(t, existingValues)
 
-	assert.Equal(t, "a", table.ColumnValues[0][0])
-	assert.Equal(t, int64(0), table.ColumnValues[1][0])
-	assert.Equal(t, int64(1001), table.ColumnValues[2][0])
+	assert.Equal(t, "a", table.columnValues[0][0])
+	assert.Equal(t, int64(0), table.columnValues[1][0])
+	assert.Equal(t, int64(1001), table.columnValues[2][0])
 
-	assert.Equal(t, "a", table.ColumnValues[0][1])
-	assert.Equal(t, int64(1), table.ColumnValues[1][1])
-	assert.Equal(t, int64(1001), table.ColumnValues[2][1])
+	assert.Equal(t, "a", table.columnValues[0][1])
+	assert.Equal(t, int64(1), table.columnValues[1][1])
+	assert.Equal(t, int64(1001), table.columnValues[2][1])
 
-	assert.Equal(t, "c", table.ColumnValues[0][2])
-	assert.Equal(t, int64(3), table.ColumnValues[1][2])
-	assert.Equal(t, int64(103), table.ColumnValues[2][2])
+	assert.Equal(t, "c", table.columnValues[0][2])
+	assert.Equal(t, int64(3), table.columnValues[1][2])
+	assert.Equal(t, int64(103), table.columnValues[2][2])
 
-	assert.Equal(t, "d", table.ColumnValues[0][3])
-	assert.Equal(t, int64(3), table.ColumnValues[1][3])
-	assert.Equal(t, int64(103), table.ColumnValues[2][3])
+	assert.Equal(t, "d", table.columnValues[0][3])
+	assert.Equal(t, int64(3), table.columnValues[1][3])
+	assert.Equal(t, int64(103), table.columnValues[2][3])
 
 	// UPSERT
 	cmds, err = ParseCommands(`UPDATE ks1.t SET col3=1002 WHERE col1 = 'a' and t.col2 = 100`)
@@ -385,47 +423,48 @@ func TestTableUpdate(t *testing.T) {
 	cmd, ok = cmds[0].(*CommandUpdate)
 	assert.True(t, ok)
 
-	isApplied, err = table.execUpdate(cmd)
+	isApplied, existingColumnInfos, existingValues, err = table.execUpdate(cmd)
 	assert.Nil(t, err)
-
 	assert.True(t, isApplied)
+	assert.Nil(t, existingColumnInfos)
+	assert.Nil(t, existingValues)
 
 	// Upserted
-	assert.Equal(t, "a", table.ColumnValues[0][0])
-	assert.Equal(t, int64(100), table.ColumnValues[1][0])
-	assert.Equal(t, int64(1002), table.ColumnValues[2][0])
+	assert.Equal(t, "a", table.columnValues[0][0])
+	assert.Equal(t, int64(100), table.columnValues[1][0])
+	assert.Equal(t, int64(1002), table.columnValues[2][0])
 
 	// Old
-	assert.Equal(t, "a", table.ColumnValues[0][1])
-	assert.Equal(t, int64(0), table.ColumnValues[1][1])
-	assert.Equal(t, int64(1001), table.ColumnValues[2][1])
+	assert.Equal(t, "a", table.columnValues[0][1])
+	assert.Equal(t, int64(0), table.columnValues[1][1])
+	assert.Equal(t, int64(1001), table.columnValues[2][1])
 
-	assert.Equal(t, "a", table.ColumnValues[0][2])
-	assert.Equal(t, int64(1), table.ColumnValues[1][2])
-	assert.Equal(t, int64(1001), table.ColumnValues[2][2])
+	assert.Equal(t, "a", table.columnValues[0][2])
+	assert.Equal(t, int64(1), table.columnValues[1][2])
+	assert.Equal(t, int64(1001), table.columnValues[2][2])
 
-	assert.Equal(t, "c", table.ColumnValues[0][3])
-	assert.Equal(t, int64(3), table.ColumnValues[1][3])
-	assert.Equal(t, int64(103), table.ColumnValues[2][3])
+	assert.Equal(t, "c", table.columnValues[0][3])
+	assert.Equal(t, int64(3), table.columnValues[1][3])
+	assert.Equal(t, int64(103), table.columnValues[2][3])
 
-	assert.Equal(t, "d", table.ColumnValues[0][4])
-	assert.Equal(t, int64(3), table.ColumnValues[1][4])
-	assert.Equal(t, int64(103), table.ColumnValues[2][4])
+	assert.Equal(t, "d", table.columnValues[0][4])
+	assert.Equal(t, int64(3), table.columnValues[1][4])
+	assert.Equal(t, int64(103), table.columnValues[2][4])
 }
 
 func TestTableDelete(t *testing.T) {
-	table := Table{
-		ColumnDefs: []*ColumnDef{
-			{"col1", PrimaryKeyPartition, TypeText, ClusteringOrderAsc},
-			{"col2", PrimaryKeyClustering, TypeBigInt, ClusteringOrderDesc},
-			{"col3", PrimaryKeyNone, TypeInt, ClusteringOrderNone},
+	table := tableStore{
+		columnDefs: []*columnDef{
+			{"col1", PrimaryKeyPartition, gocql.TypeText, ClusteringOrderAsc},
+			{"col2", PrimaryKeyClustering, gocql.TypeBigInt, ClusteringOrderDesc},
+			{"col3", PrimaryKeyNone, gocql.TypeInt, ClusteringOrderNone},
 		},
-		ColumnValues: [][]any{
+		columnValues: [][]any{
 			{"a", "a", "c", "d"},
 			{int64(0), int64(1), int64(3), int64(3)},
 			{int64(1), int64(2), int64(3), int64(4)},
 		},
-		ColumnDefMap: map[string]int{"col1": 0, "col2": 1, "col3": 2},
+		columnDefMap: map[string]int{"col1": 0, "col2": 1, "col3": 2},
 	}
 	var cmds []Command
 	var cmd *CommandDelete
@@ -440,8 +479,8 @@ func TestTableDelete(t *testing.T) {
 	isApplied, err = table.execDelete(cmd)
 	assert.Nil(t, err)
 	assert.True(t, isApplied)
-	assert.Nil(t, table.ColumnValues[2][0])
-	assert.Nil(t, table.ColumnValues[2][1])
+	assert.Nil(t, table.columnValues[2][0])
+	assert.Nil(t, table.columnValues[2][1])
 
 	cmds, err = ParseCommands(`DELETE FROM ks1.t WHERE t.col1 = 'a'`)
 	assert.Nil(t, err)
@@ -450,6 +489,6 @@ func TestTableDelete(t *testing.T) {
 	isApplied, err = table.execDelete(cmd)
 	assert.Nil(t, err)
 	assert.True(t, isApplied)
-	assert.Equal(t, "c", table.ColumnValues[0][0])
-	assert.Equal(t, "d", table.ColumnValues[0][1])
+	assert.Equal(t, "c", table.columnValues[0][0])
+	assert.Equal(t, "d", table.columnValues[0][1])
 }

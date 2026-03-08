@@ -1,11 +1,12 @@
 package gocqlmem
 
 import (
-	"errors"
 	"fmt"
+
+	gocql "github.com/apache/cassandra-gocql-driver/v2"
 )
 
-type Iter struct {
+type gocqlmemIter struct {
 	err error
 	pos int
 	//meta    resultMetadata
@@ -16,92 +17,71 @@ type Iter struct {
 	//framer *framer
 	//closed int32
 
+	keyspace             string
+	table                string
 	retrievedValues      [][]any
-	retrievedColumnInfos []ColumnInfo
+	retrievedColumnInfos []gocql.ColumnInfo
 	pagingState          []byte
 }
 
-func (iter *Iter) Columns() []ColumnInfo {
+func NewGocqlmemIterWithError(err error) *gocqlmemIter {
+	return &gocqlmemIter{err: err}
+}
+func NewGocqlmemIterWithKeyspace(ks string) *gocqlmemIter {
+	return &gocqlmemIter{keyspace: ks}
+}
+
+func NewGocqlmemIterWithData(ks string, table string, infos []gocql.ColumnInfo, values [][]any) *gocqlmemIter {
+	return &gocqlmemIter{keyspace: ks, table: table, retrievedColumnInfos: infos, retrievedValues: values}
+}
+
+func NewGocqlmemIterWithDataAndPagingState(ks string, table string, infos []gocql.ColumnInfo, values [][]any, pagingState []byte) *gocqlmemIter {
+	return &gocqlmemIter{keyspace: ks, table: table, retrievedColumnInfos: infos, retrievedValues: values, pagingState: pagingState}
+}
+
+// Iter interface
+
+func (iter *gocqlmemIter) Host() *gocql.HostInfo {
+	// TODO: implement
+	return &gocql.HostInfo{}
+}
+
+func (iter *gocqlmemIter) Columns() []gocql.ColumnInfo {
 	return iter.retrievedColumnInfos
-
 }
 
-// func (iter *Iter) readColumn() ([]byte, error) {
-// 	return iter.framer.readBytesInternal()
-// }
-
-// Do not ask me why gocql exposes this
-func (iter *Iter) RowData() (RowData, error) {
-	if iter.err != nil {
-		return RowData{}, iter.err
-	}
-
-	rowData := RowData{
-		Columns: columnInfosToColumnNames(iter.retrievedColumnInfos),
-		Values:  make([]interface{}, len(iter.retrievedColumnInfos)),
-	}
-
-	for i := range len(iter.retrievedColumnInfos) {
-		if iter.retrievedColumnInfos[i].TypeInfo == nil {
-			// We could not guess the type this expression, so do not initialize this value
-			continue
-		}
-		rowData.Values[i] = iter.retrievedColumnInfos[i].TypeInfo.Zero()
-	}
-
-	return rowData, nil
+func (iter *gocqlmemIter) Attempts() int {
+	// TODO: implement
+	return 1
 }
 
-func (iter *Iter) SliceMap() ([]map[string]interface{}, error) {
-	if iter.err != nil {
-		return nil, iter.err
-	}
-
-	// Not checking for the error because we just did
-	rowData, _ := iter.RowData()
-	dataToReturn := make([]map[string]interface{}, 0)
-	for iter.Scan(rowData.Values...) {
-		m := make(map[string]interface{}, len(rowData.Columns))
-		for i, column := range rowData.Columns {
-			m[column] = rowData.Values[i]
-		}
-		dataToReturn = append(dataToReturn, m)
-	}
-	if iter.err != nil {
-		return nil, iter.err
-	}
-	return dataToReturn, nil
+func (iter *gocqlmemIter) Latency() int64 {
+	// TODO: implement
+	return 0
 }
 
-func (iter *Iter) Close() error {
-	return iter.err
+func (iter *gocqlmemIter) Keyspace() string {
+	return iter.keyspace
 }
 
-func (iter *Iter) Scanner() Scanner {
+func (iter *gocqlmemIter) Table() string {
+	return iter.table
+}
+
+func (iter *gocqlmemIter) Scanner() gocql.Scanner {
 	if iter == nil {
 		return nil
 	}
-
-	return &iterScanner{iter: iter, cols: make([]interface{}, len(iter.retrievedColumnInfos))}
+	return &iterScanner{Iter: iter, Cols: make([]interface{}, len(iter.retrievedColumnInfos))}
 }
 
-func (iter *Iter) checkErrAndNotFound() error {
-	if iter.err != nil {
-		return iter.err
-		//} else if iter.numRows == 0 {
-	} else if len(iter.retrievedValues) == 0 {
-		return errors.New("not found")
-	}
-	return nil
-}
-
-func (iter *Iter) Scan(dest ...interface{}) bool {
+func (iter *gocqlmemIter) Scan(dest ...interface{}) bool {
 	if iter.err != nil || iter.pos >= len(iter.retrievedValues) {
 		return false
 	}
 
 	if len(dest) != len(iter.retrievedColumnInfos) {
-		iter.err = fmt.Errorf("gocqlmem: not enough columns to scan into: have %d want %d", len(dest), len(iter.retrievedColumnInfos))
+		iter.SetErr(fmt.Errorf("gocqlmem: not enough columns to scan into: have %d want %d", len(dest), len(iter.retrievedColumnInfos)))
 		return false
 	}
 
@@ -157,15 +137,90 @@ func (iter *Iter) Scan(dest ...interface{}) bool {
 	// return true
 }
 
-func (iter *Iter) MapScan(m map[string]interface{}) bool {
+func (iter *gocqlmemIter) GetCustomPayload() map[string][]byte {
+	// TODO: implement
+	return map[string][]byte{}
+}
+func (iter *gocqlmemIter) Warnings() []string {
+	// TODO: implement
+	return []string{}
+}
+
+func (iter *gocqlmemIter) Close() error {
+	return iter.err
+}
+
+func (iter *gocqlmemIter) WillSwitchPage() bool {
+	// TODO: implement
+	return false
+}
+
+func (iter *gocqlmemIter) PageState() []byte {
+	return iter.pagingState
+}
+
+func (iter *gocqlmemIter) NumRows() int {
+	return len(iter.retrievedValues)
+}
+
+// Do not ask me why gocql exposes this
+func (iter *gocqlmemIter) RowData() (gocql.RowData, error) {
+	if iter.err != nil {
+		return gocql.RowData{}, iter.err
+	}
+
+	rowData := gocql.RowData{
+		Columns: columnInfosToColumnNames(iter.retrievedColumnInfos),
+		Values:  make([]interface{}, len(iter.retrievedColumnInfos)),
+	}
+
+	for i := range len(iter.retrievedColumnInfos) {
+		if iter.retrievedColumnInfos[i].TypeInfo == nil {
+			// We could not guess the type this expression, so do not initialize this value
+			continue
+		}
+		rowData.Values[i] = iter.retrievedColumnInfos[i].TypeInfo.Zero()
+	}
+
+	return rowData, nil
+}
+
+func (iter *gocqlmemIter) SliceMap() ([]map[string]interface{}, error) {
+	if iter.err != nil {
+		return nil, iter.err
+	}
+
+	// Not checking for the error because we just did
+	rowData, _ := iter.RowData()
+	dataToReturn := make([]map[string]interface{}, 0)
+	for iter.Scan(rowData.Values...) {
+		m := make(map[string]interface{}, len(rowData.Columns))
+		for i, column := range rowData.Columns {
+			m[column] = rowData.Values[i]
+		}
+		dataToReturn = append(dataToReturn, m)
+	}
+	if iter.err != nil {
+		return nil, iter.err
+	}
+	return dataToReturn, nil
+}
+
+func (iter *gocqlmemIter) MapScan(dest map[string]interface{}) bool {
 	if iter.err != nil {
 		return false
 	}
 
+	if dest != nil {
+		clear(dest)
+	}
+
 	rowDataValues := make([]any, len(iter.retrievedColumnInfos))
 	if iter.Scan(rowDataValues...) {
-		for i, columnInfo := range iter.retrievedColumnInfos {
-			m[columnInfo.Name] = rowDataValues[i]
+		if dest != nil {
+			for i, columnInfo := range iter.retrievedColumnInfos {
+				dest[columnInfo.Name] = rowDataValues[i]
+			}
 		}
 		return true
 	}
@@ -187,7 +242,10 @@ func (iter *Iter) MapScan(m map[string]interface{}) bool {
 	// return false
 }
 
-func (iter *Iter) PageState() []byte {
-	//return iter.meta.pagingState
-	return iter.pagingState
+func (iter *gocqlmemIter) Err() error {
+	return iter.err
+}
+
+func (iter *gocqlmemIter) SetErr(err error) {
+	iter.err = err
 }

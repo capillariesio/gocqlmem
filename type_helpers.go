@@ -5,71 +5,74 @@ import (
 	"fmt"
 	"strings"
 
+	gocql "github.com/apache/cassandra-gocql-driver/v2"
 	"github.com/capillariesio/gocqlmem/eval"
+	"github.com/shopspring/decimal"
 )
 
-func StringToType(s string) Type {
+func stringToType(s string) (gocql.Type, error) {
 	switch strings.ToLower(s) {
 	case string(DataTypeAscii):
-		return TypeAscii
+		return gocql.TypeAscii, nil
 	case string(DataTypeBigint):
-		return TypeBigInt
+		return gocql.TypeBigInt, nil
 	case string(DataTypeBlob):
-		return TypeBlob
+		return gocql.TypeBlob, nil
 	case string(DataTypeBoolean):
-		return TypeBoolean
+		return gocql.TypeBoolean, nil
 	case string(DataTypeCounter):
-		return TypeCounter
+		return gocql.TypeCounter, nil
 	case string(DataTypeDate):
-		return TypeDate
+		return gocql.TypeDate, nil
 	case string(DataTypeDecimal):
-		return TypeDecimal
+		return gocql.TypeDecimal, nil
 	case string(DataTypeDouble):
-		return TypeDouble
+		return gocql.TypeDouble, nil
 	case string(DataTypeDuration):
-		return TypeDuration
+		return gocql.TypeDuration, nil
 	case string(DataTypeFloat):
-		return TypeFloat
+		return gocql.TypeFloat, nil
 	case string(DataTypeInet):
-		return TypeInet
+		return gocql.TypeInet, nil
 	case string(DataTypeInt):
-		return TypeInt
+		return gocql.TypeInt, nil
 	case string(DataTypeSmallint):
-		return TypeSmallInt
+		return gocql.TypeSmallInt, nil
 	case string(DataTypeText):
-		return TypeText
+		return gocql.TypeText, nil
 	case string(DataTypeTime):
-		return TypeTime
+		return gocql.TypeTime, nil
 	case string(DataTypeTimestamp):
-		return TypeTimestamp
+		return gocql.TypeTimestamp, nil
 	case string(DataTypeTimeuuid):
-		return TypeTimeUUID
+		return gocql.TypeTimeUUID, nil
 	case string(DataTypeTinyint):
-		return TypeTinyInt
+		return gocql.TypeTinyInt, nil
 	case string(DataTypeUuid):
-		return TypeUUID
+		return gocql.TypeUUID, nil
 	case string(DataTypeVarchar):
-		return TypeVarchar
+		return gocql.TypeVarchar, nil
 	case string(DataTypeVarint):
-		return TypeVarint
+		return gocql.TypeVarint, nil
 	default:
-		return TypeUnknown
+		return gocql.TypeCustom, fmt.Errorf("unknown type %s", s)
 	}
 }
 
-func IsValidDataType(s string) bool {
-	return StringToType(s) != TypeUnknown
+func isValidDataType(typ string) bool {
+	_, err := stringToType(typ)
+	return err == nil
 }
 
-func CastToInternalType(val any, cqlType Type) (any, error) {
+func castToInternalType(val any, cqlType gocql.Type) (any, error) {
 	switch cqlType {
-	case TypeInt, TypeBigInt, TypeTinyInt, TypeSmallInt, TypeCounter:
+	case gocql.TypeInt, gocql.TypeBigInt, gocql.TypeTinyInt, gocql.TypeSmallInt, gocql.TypeCounter:
 		return eval.CastToInt64(val)
 
-	case TypeDouble, TypeFloat:
+	case gocql.TypeDouble, gocql.TypeFloat:
 		return eval.CastToFloat64(val)
 
-	case TypeText, TypeVarchar:
+	case gocql.TypeText, gocql.TypeVarchar:
 		typedVal, ok := any(val).(string)
 		if !ok {
 			return 0, fmt.Errorf("cast %v to string failed", val)
@@ -80,7 +83,7 @@ func CastToInternalType(val any, cqlType Type) (any, error) {
 	}
 }
 
-func CompareInternalType(left any, right any, cqlType Type) (int, error) {
+func compareInternalType(left any, right any, cqlType gocql.Type) (int, error) {
 	if left == nil {
 		return 0, fmt.Errorf("left is nil, not allowed in partition/clustering key comparison, dev error")
 	}
@@ -88,7 +91,7 @@ func CompareInternalType(left any, right any, cqlType Type) (int, error) {
 		return 0, fmt.Errorf("right is nil, not allowed in partition/clustering key comparison, dev error")
 	}
 	switch cqlType {
-	case TypeInt, TypeBigInt, TypeTinyInt, TypeSmallInt:
+	case gocql.TypeInt, gocql.TypeBigInt, gocql.TypeTinyInt, gocql.TypeSmallInt:
 		typedLeft, okLeft := any(left).(int64)
 		if !okLeft {
 			return 0, fmt.Errorf("left cast %v to int64 failed", left)
@@ -99,7 +102,7 @@ func CompareInternalType(left any, right any, cqlType Type) (int, error) {
 		}
 		return cmp.Compare(typedLeft, typedRight), nil
 
-	case TypeDouble, TypeFloat:
+	case gocql.TypeDouble, gocql.TypeFloat:
 		typedLeft, okLeft := any(left).(float64)
 		if !okLeft {
 			return 0, fmt.Errorf("left cast %v to float64 failed", left)
@@ -109,7 +112,7 @@ func CompareInternalType(left any, right any, cqlType Type) (int, error) {
 			return 0, fmt.Errorf("right cast %v to float64 failed", right)
 		}
 		return cmp.Compare(typedLeft, typedRight), nil
-	case TypeBoolean:
+	case gocql.TypeBoolean:
 		typedLeft, okLeft := any(left).(bool)
 		if !okLeft {
 			return 0, fmt.Errorf("left cast %v to bool failed", left)
@@ -125,7 +128,7 @@ func CompareInternalType(left any, right any, cqlType Type) (int, error) {
 		} else {
 			return 0, nil
 		}
-	case TypeText, TypeVarchar:
+	case gocql.TypeText, gocql.TypeVarchar:
 		typedLeft, okLeft := any(left).(string)
 		if !okLeft {
 			return 0, fmt.Errorf("left cast %v to string failed", left)
@@ -140,7 +143,7 @@ func CompareInternalType(left any, right any, cqlType Type) (int, error) {
 	}
 }
 
-func InternalValueToProvidedPtr(src any, destPtr any) error {
+func internalValueToProvidedPtr(src any, destPtr any) error {
 	switch typedSrc := src.(type) {
 	case int64:
 		switch typedDestPtr := destPtr.(type) {
@@ -190,23 +193,53 @@ func InternalValueToProvidedPtr(src any, destPtr any) error {
 		default:
 			return fmt.Errorf("cannot store string %v(%T) to %T", typedSrc, typedSrc, destPtr)
 		}
+	case decimal.Decimal:
+		switch typedDestPtr := destPtr.(type) {
+		case *decimal.Decimal:
+			*typedDestPtr = typedSrc
+		default:
+			return fmt.Errorf("cannot store decimal %v(%T) to %T", typedSrc, typedSrc, destPtr)
+		}
 	default:
 		return fmt.Errorf("cannot store %v(%T) to %T, type not supported", src, src, destPtr)
 	}
 	return nil
 }
 
-func GuessInternalValueType(val any) Type {
+func guessInternalValueType(val any) (gocql.Type, error) {
 	switch val.(type) {
 	case int64:
-		return TypeInt
+		return gocql.TypeInt, nil
 	case float64:
-		return TypeFloat
+		return gocql.TypeFloat, nil
 	case bool:
-		return TypeBoolean
+		return gocql.TypeBoolean, nil
 	case string:
-		return TypeText
+		return gocql.TypeText, nil
+	case decimal.Decimal:
+		return gocql.TypeDecimal, nil
 	default:
-		return TypeUnknown
+		return gocql.TypeCustom, fmt.Errorf("unexpected internal type %T", val)
 	}
+}
+
+func columnInfosToColumnNames(columnInfos []gocql.ColumnInfo) []string {
+	result := make([]string, len(columnInfos))
+	for i := range len(columnInfos) {
+		result[i] = columnInfos[i].Name
+	}
+	return result
+}
+
+func namesAndTypeInfosTocolumnInfos(ks string, table string, columnNames []string, typeInfos []gocql.TypeInfo) []gocql.ColumnInfo {
+	result := make([]gocql.ColumnInfo, len(columnNames))
+	for i := range len(columnNames) {
+		result[i] = gocql.ColumnInfo{
+			Keyspace: ks,
+			Table:    table,
+			Name:     columnNames[i],
+			TypeInfo: typeInfos[i],
+		}
+	}
+	return result
 }

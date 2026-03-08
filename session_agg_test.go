@@ -11,7 +11,7 @@ import (
 )
 
 func TestFunctions(t *testing.T) {
-	s := NewSession()
+	s := NewGocqlmemSession()
 	assert.Nil(t, s.Query("CREATE KEYSPACE ks1").Exec())
 	assert.Nil(t, s.Query("CREATE TABLE ks1.t1 (a int, b int, c double, d decimal, e smallint, f tinyint, primary key (a, b))").Exec())
 
@@ -48,7 +48,7 @@ func TestFunctions(t *testing.T) {
 }
 
 func TestCountStar(t *testing.T) {
-	s := NewSession()
+	s := NewGocqlmemSession()
 	assert.Nil(t, s.Query("CREATE KEYSPACE ks1").Exec())
 	assert.Nil(t, s.Query("CREATE TABLE ks1.t1 (a int, b int, c double, primary key (a, b))").Exec())
 
@@ -93,7 +93,7 @@ func TestCountStar(t *testing.T) {
 }
 
 func TestMaxAggregationDescending(t *testing.T) {
-	s := NewSession()
+	s := NewGocqlmemSession()
 	assert.Nil(t, s.Query("CREATE KEYSPACE ks1").Exec())
 	assert.Nil(t, s.Query("CREATE TABLE ks1.t1 (a int, b int, primary key (a, b)) WITH CLUSTERING ORDER BY (b DESC)").Exec())
 
@@ -113,7 +113,7 @@ func TestMaxAggregationDescending(t *testing.T) {
 }
 
 func TestMinAggregationDescending(t *testing.T) {
-	s := NewSession()
+	s := NewGocqlmemSession()
 	assert.Nil(t, s.Query("CREATE KEYSPACE ks1").Exec())
 	assert.Nil(t, s.Query("CREATE TABLE ks1.t1 (a int, b int, primary key (a, b)) WITH CLUSTERING ORDER BY (b DESC)").Exec())
 
@@ -133,7 +133,7 @@ func TestMinAggregationDescending(t *testing.T) {
 }
 
 func TestMaxAggregationAscending(t *testing.T) {
-	s := NewSession()
+	s := NewGocqlmemSession()
 	assert.Nil(t, s.Query("CREATE KEYSPACE ks1").Exec())
 	assert.Nil(t, s.Query("CREATE TABLE ks1.t1 (a int, b int, primary key (a, b)) WITH CLUSTERING ORDER BY (b ASC)").Exec())
 
@@ -153,7 +153,7 @@ func TestMaxAggregationAscending(t *testing.T) {
 }
 
 func TestMinAggregationAscending(t *testing.T) {
-	s := NewSession()
+	s := NewGocqlmemSession()
 	assert.Nil(t, s.Query("CREATE KEYSPACE ks1").Exec())
 	assert.Nil(t, s.Query("CREATE TABLE ks1.t1 (a int, b int, primary key (a, b)) WITH CLUSTERING ORDER BY (b ASC)").Exec())
 
@@ -173,7 +173,7 @@ func TestMinAggregationAscending(t *testing.T) {
 }
 
 func TestAggregateWithColumns(t *testing.T) {
-	s := NewSession()
+	s := NewGocqlmemSession()
 	assert.Nil(t, s.Query("CREATE KEYSPACE ks1").Exec())
 	assert.Nil(t, s.Query("CREATE TABLE ks1.t1 (a int, b int, c int, primary key (a, b))").Exec())
 
@@ -190,7 +190,7 @@ func TestAggregateWithColumns(t *testing.T) {
 }
 
 func TestAggregateOnCounters(t *testing.T) {
-	s := NewSession()
+	s := NewGocqlmemSession()
 	assert.Nil(t, s.Query("CREATE KEYSPACE ks1").Exec())
 	assert.Nil(t, s.Query("CREATE TABLE ks1.t1 (a int, b counter, primary key (a))").Exec())
 
@@ -221,7 +221,7 @@ func TestAggregateWithSetsListMapsTuplesUdtsFunctionsTtlSchemachange(t *testing.
 }
 
 func TestInvalidCalls(t *testing.T) {
-	s := NewSession()
+	s := NewGocqlmemSession()
 	assert.Nil(t, s.Query("CREATE KEYSPACE ks1").Exec())
 	assert.Nil(t, s.Query("CREATE TABLE ks1.t1 (a int, b int, c int, primary key (a, b))").Exec())
 
@@ -232,14 +232,14 @@ func TestInvalidCalls(t *testing.T) {
 	assertUpserMapScanCas(t, true, s, "INSERT INTO ks1.t1 (a, b, c) VALUES (1, 3, 8)", existingRowMap)
 
 	iter := s.Query("SELECT max(b), max(c) FROM ks1.t1 WHERE max(a) = 1").Iter()
-	assert.Contains(t, iter.err.Error(), "cannot evaluate where expression: cannot evaluate max(), context aggregate not enabled")
+	assert.Contains(t, iter.Err().Error(), "cannot evaluate where expression: cannot evaluate max(), context aggregate not enabled")
 
 	iter = s.Query("SELECT max(b), max(c) FROM ks1.t1 WHERE max(a)").Iter()
-	assert.Contains(t, iter.err.Error(), "cannot evaluate where expression: cannot evaluate max(), context aggregate not enabled")
+	assert.Contains(t, iter.Err().Error(), "cannot evaluate where expression: cannot evaluate max(), context aggregate not enabled")
 }
 
 func TestReversedType(t *testing.T) {
-	s := NewSession()
+	s := NewGocqlmemSession()
 	assert.Nil(t, s.Query("CREATE KEYSPACE ks1").Exec())
 	assert.Nil(t, s.Query("CREATE TABLE ks1.t1 (a int, b int, c int, primary key (a, b)) WITH CLUSTERING ORDER BY (b DESC)").Exec())
 
@@ -253,7 +253,7 @@ func TestReversedType(t *testing.T) {
 }
 
 func TestArithmeticCorrectness(t *testing.T) {
-	s := NewSession()
+	s := NewGocqlmemSession()
 	assert.Nil(t, s.Query("CREATE KEYSPACE ks1").Exec())
 	assert.Nil(t, s.Query("CREATE TABLE ks1.t1 (bucket int primary key, val decimal)").Exec())
 
@@ -270,7 +270,7 @@ func TestArithmeticCorrectness(t *testing.T) {
 }
 
 func TestAggregatesWithoutOverflow(t *testing.T) {
-	s := NewSession()
+	s := NewGocqlmemSession()
 	assert.Nil(t, s.Query("CREATE KEYSPACE ks1").Exec())
 	assert.Nil(t, s.Query("CREATE TABLE ks1.t1 (bucket int primary key, v1 tinyint, v2 smallint, v3 int, v4 bigint, v5 varint)").Exec())
 
@@ -291,7 +291,7 @@ func TestAggregatesWithoutOverflow(t *testing.T) {
 }
 
 func TestAggregatesOverflow(t *testing.T) {
-	s := NewSession()
+	s := NewGocqlmemSession()
 	assert.Nil(t, s.Query("CREATE KEYSPACE ks1").Exec())
 	assert.Nil(t, s.Query("CREATE TABLE ks1.t1 (bucket int primary key, v1 tinyint, v2 smallint, v3 int, v4 bigint, v5 varint)").Exec())
 
@@ -316,7 +316,7 @@ func TestAggregatesOverflow(t *testing.T) {
 }
 
 func TestDoubleAggregatesPrecision(t *testing.T) {
-	s := NewSession()
+	s := NewGocqlmemSession()
 	assert.Nil(t, s.Query("CREATE KEYSPACE ks1").Exec())
 	assert.Nil(t, s.Query("CREATE TABLE ks1.t1 (bucket int primary key, v1 float, v2 double, v3 decimal)").Exec())
 
@@ -338,7 +338,7 @@ func TestDoubleAggregatesPrecision(t *testing.T) {
 }
 
 func TestNan(t *testing.T) {
-	s := NewSession()
+	s := NewGocqlmemSession()
 	assert.Nil(t, s.Query("CREATE KEYSPACE ks1").Exec())
 	assert.Nil(t, s.Query("CREATE TABLE ks1.t1 (bucket int primary key, v1 float, v2 double)").Exec())
 
@@ -348,7 +348,7 @@ func TestNan(t *testing.T) {
 }
 
 func TestInfinity(t *testing.T) {
-	s := NewSession()
+	s := NewGocqlmemSession()
 	assert.Nil(t, s.Query("CREATE KEYSPACE ks1").Exec())
 	assert.Nil(t, s.Query("CREATE TABLE ks1.t1 (bucket int primary key, v1 float, v2 double)").Exec())
 
@@ -358,7 +358,7 @@ func TestInfinity(t *testing.T) {
 }
 
 func TestSumPrecision(t *testing.T) {
-	s := NewSession()
+	s := NewGocqlmemSession()
 	assert.Nil(t, s.Query("CREATE KEYSPACE ks1").Exec())
 	assert.Nil(t, s.Query("CREATE TABLE ks1.t1 (bucket int primary key, v1 float, v2 double, v3 decimal)").Exec())
 

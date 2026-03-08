@@ -3,6 +3,7 @@ package gocqlmem
 import (
 	"testing"
 
+	gocql "github.com/apache/cassandra-gocql-driver/v2"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -61,9 +62,9 @@ func TestCreateTable(t *testing.T) {
 	assert.Equal(t, "t1", cr.TableName)
 
 	assert.Equal(t, "f1", cr.ColumnDefs[0].Name)
-	assert.Equal(t, TypeText, cr.ColumnDefs[0].Type)
+	assert.Equal(t, gocql.TypeText, cr.ColumnDefs[0].ColumnType)
 	assert.Equal(t, "f2", cr.ColumnDefs[1].Name)
-	assert.Equal(t, TypeTimestamp, cr.ColumnDefs[1].Type)
+	assert.Equal(t, gocql.TypeTimestamp, cr.ColumnDefs[1].ColumnType)
 
 	assert.Equal(t, "f1", cr.PartitionKeyColumns[0])
 	assert.Equal(t, "f2", cr.PartitionKeyColumns[1])
@@ -86,7 +87,7 @@ func TestCreateTable(t *testing.T) {
 	assert.Equal(t, "t1", cr.TableName)
 
 	assert.Equal(t, "f1", cr.ColumnDefs[0].Name)
-	assert.Equal(t, TypeText, cr.ColumnDefs[0].Type)
+	assert.Equal(t, gocql.TypeText, cr.ColumnDefs[0].ColumnType)
 
 	assert.Equal(t, "f1", cr.PartitionKeyColumns[0])
 
@@ -100,7 +101,7 @@ func TestCreateTable(t *testing.T) {
 	assert.Equal(t, "t1", cr.TableName)
 
 	assert.Equal(t, "f1", cr.ColumnDefs[0].Name)
-	assert.Equal(t, TypeText, cr.ColumnDefs[0].Type)
+	assert.Equal(t, gocql.TypeText, cr.ColumnDefs[0].ColumnType)
 
 	assert.Equal(t, "f1", cr.PartitionKeyColumns[0])
 	assert.Equal(t, "f2", cr.ClusteringKeyColumns[0])

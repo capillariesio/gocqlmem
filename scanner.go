@@ -4,57 +4,39 @@ import (
 	"fmt"
 )
 
-type Scanner interface {
-	// Next advances the row pointer to point at the next row, the row is valid until
-	// the next call of Next. It returns true if there is a row which is available to be
-	// scanned into with Scan.
-	// Next must be called before every call to Scan.
-	Next() bool
-
-	// Scan copies the current row's columns into dest. If the length of dest does not equal
-	// the number of columns returned in the row an error is returned. If an error is encountered
-	// when unmarshalling a column into the value in dest an error is returned and the row is invalidated
-	// until the next call to Next.
-	// Next must be called before calling Scan, if it is not an error is returned.
-	Scan(...interface{}) error
-
-	// Err returns the if there was one during iteration that resulted in iteration being unable to complete.
-	// Err will also release resources held by the iterator, the Scanner should not used after being called.
-	Err() error
-}
 type iterScanner struct {
-	iter  *Iter
-	cols  []interface{}
-	valid bool
+	Iter    *gocqlmemIter
+	Cols    []interface{}
+	IsValid bool
 }
 
 func (is *iterScanner) Next() bool {
-	if is.iter.pos >= len(is.iter.retrievedValues) {
+	if is.Iter.pos >= len(is.Iter.retrievedValues) {
 		return false
 	}
-	for i := range len(is.iter.retrievedColumnInfos) {
-		is.cols[i] = is.iter.retrievedValues[is.iter.pos][i]
+	for i := range len(is.Iter.retrievedColumnInfos) {
+		is.Cols[i] = is.Iter.retrievedValues[is.Iter.pos][i]
 	}
-	is.iter.pos++
+	is.Iter.pos++
 	return true
 }
 
 func (is *iterScanner) Scan(dest ...interface{}) error {
-	if len(dest) < len(is.cols) {
-		return fmt.Errorf("cannot scan %d columns to dest of length %d", len(is.cols), len(dest))
+	if len(dest) < len(is.Cols) {
+		return fmt.Errorf("cannot scan %d columns to dest of length %d", len(is.Cols), len(dest))
 	}
 
-	for i := range len(is.cols) {
-		if err := InternalValueToProvidedPtr(is.cols[i], dest[i]); err != nil {
+	for i := range len(is.Cols) {
+		if err := internalValueToProvidedPtr(is.Cols[i], dest[i]); err != nil {
 			return fmt.Errorf("cannot scan column %d: %s", i, err.Error())
 		}
 	}
 	return nil
 }
 func (is *iterScanner) Err() error {
-	iter := is.iter
-	is.iter = nil
-	is.cols = nil
-	is.valid = false
+	iter := is.Iter
+	is.Iter = nil
+	is.Cols = nil
+	is.IsValid = false
 	return iter.Close()
 }

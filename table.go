@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 
+	gocql "github.com/apache/cassandra-gocql-driver/v2"
 	"github.com/capillariesio/gocqlmem/eval"
 	"github.com/shopspring/decimal"
 )
@@ -24,22 +25,22 @@ const (
 	PrimaryKeyNone
 )
 
-type ColumnDef struct {
-	Name            string
-	PrimaryKey      PrimaryKeyType
-	Type            Type
-	ClusteringOrder ClusteringOrderType
+type columnDef struct {
+	name            string
+	primaryKey      PrimaryKeyType
+	columnType      gocql.Type
+	clusteringOrder ClusteringOrderType
 }
 
-type Table struct {
-	ColumnDefs   []*ColumnDef // Partition,clustering,other
-	ColumnValues [][]any      // Partition,clustering,other
-	ColumnTokens [][]int64    // Partition keys only
-	ColumnDefMap map[string]int
-	Lock         sync.RWMutex
+type tableStore struct {
+	columnDefs   []*columnDef // Partition,clustering,other
+	columnValues [][]any      // Partition,clustering,other
+	columnTokens [][]int64    // Partition keys only
+	columnDefMap map[string]int
+	lock         sync.RWMutex
 }
 
-func createColDef(name string, mapColType map[string]Type, primaryKeyType PrimaryKeyType, mapColClusteringOrder map[string]ClusteringOrderType) (*ColumnDef, error) {
+func createColDef(name string, mapColType map[string]gocql.Type, primaryKeyType PrimaryKeyType, mapColClusteringOrder map[string]ClusteringOrderType) (*columnDef, error) {
 	dataType, ok := mapColType[name]
 	if !ok {
 		return nil, fmt.Errorf("cannot find definition for column %s", name)
@@ -52,26 +53,26 @@ func createColDef(name string, mapColType map[string]Type, primaryKeyType Primar
 	if primaryKeyType == PrimaryKeyPartition {
 		clusteringOrder = ClusteringOrderAsc
 	}
-	return &ColumnDef{
-		Name:            name,
-		PrimaryKey:      primaryKeyType,
-		Type:            dataType,
-		ClusteringOrder: clusteringOrder,
+	return &columnDef{
+		name:            name,
+		primaryKey:      primaryKeyType,
+		columnType:      dataType,
+		clusteringOrder: clusteringOrder,
 	}, nil
 }
 
-func newTable(cmd *CommandCreateTable) (*Table, error) {
-	t := Table{
-		ColumnDefs:   make([]*ColumnDef, len(cmd.ColumnDefs)),
-		ColumnValues: make([][]any, len(cmd.ColumnDefs)),
-		ColumnTokens: make([][]int64, len(cmd.PartitionKeyColumns)),
-		ColumnDefMap: map[string]int{},
+func newTable(cmd *CommandCreateTable) (*tableStore, error) {
+	t := tableStore{
+		columnDefs:   make([]*columnDef, len(cmd.ColumnDefs)),
+		columnValues: make([][]any, len(cmd.ColumnDefs)),
+		columnTokens: make([][]int64, len(cmd.PartitionKeyColumns)),
+		columnDefMap: map[string]int{},
 	}
 
-	mapColType := map[string]Type{}
+	mapColType := map[string]gocql.Type{}
 	var err error
 	for _, createTableColDef := range cmd.ColumnDefs {
-		mapColType[createTableColDef.Name] = createTableColDef.Type
+		mapColType[createTableColDef.Name] = createTableColDef.ColumnType
 	}
 
 	mapColClusteringOrder := map[string]ClusteringOrderType{}
@@ -96,30 +97,30 @@ func newTable(cmd *CommandCreateTable) (*Table, error) {
 	}
 
 	colDefIdx := 0
-	t.ColumnDefMap = map[string]int{}
+	t.columnDefMap = map[string]int{}
 	// Partition columns first
 	for _, name := range cmd.PartitionKeyColumns {
-		if t.ColumnDefs[colDefIdx], err = createColDef(name, mapColType, PrimaryKeyPartition, mapColClusteringOrder); err != nil {
+		if t.columnDefs[colDefIdx], err = createColDef(name, mapColType, PrimaryKeyPartition, mapColClusteringOrder); err != nil {
 			return nil, err
 		}
-		t.ColumnDefMap[name] = colDefIdx
+		t.columnDefMap[name] = colDefIdx
 		colDefIdx++
 	}
 	// Clustering columns next
 	for _, name := range cmd.ClusteringKeyColumns {
-		if t.ColumnDefs[colDefIdx], err = createColDef(name, mapColType, PrimaryKeyClustering, mapColClusteringOrder); err != nil {
+		if t.columnDefs[colDefIdx], err = createColDef(name, mapColType, PrimaryKeyClustering, mapColClusteringOrder); err != nil {
 			return nil, err
 		}
-		t.ColumnDefMap[name] = colDefIdx
+		t.columnDefMap[name] = colDefIdx
 		colDefIdx++
 	}
 	// All other columns next, in the order of appearance in the CREATE TABLE cmd
 	for _, createTableColDef := range cmd.ColumnDefs {
-		if _, ok := t.ColumnDefMap[createTableColDef.Name]; !ok {
-			if t.ColumnDefs[colDefIdx], err = createColDef(createTableColDef.Name, mapColType, PrimaryKeyNone, mapColClusteringOrder); err != nil {
+		if _, ok := t.columnDefMap[createTableColDef.Name]; !ok {
+			if t.columnDefs[colDefIdx], err = createColDef(createTableColDef.Name, mapColType, PrimaryKeyNone, mapColClusteringOrder); err != nil {
 				return nil, err
 			}
-			t.ColumnDefMap[createTableColDef.Name] = colDefIdx
+			t.columnDefMap[createTableColDef.Name] = colDefIdx
 			colDefIdx++
 		}
 	}
@@ -127,22 +128,22 @@ func newTable(cmd *CommandCreateTable) (*Table, error) {
 	return &t, nil
 }
 
-func (t *Table) getClusteringKeyOrderByName(name string) ClusteringOrderType {
-	for _, colDef := range t.ColumnDefs {
-		if name == colDef.Name {
-			return colDef.ClusteringOrder
+func (t *tableStore) getClusteringKeyOrderByName(name string) ClusteringOrderType {
+	for _, colDef := range t.columnDefs {
+		if name == colDef.name {
+			return colDef.clusteringOrder
 		}
 	}
 	return ClusteringOrderNone
 }
 
-type ClusteringKeyEntry struct {
+type clusteringKeyEntry struct {
 	Idx int
 	Key string
 }
 
-func (t *Table) getRowSequenceFromColumnDefAndSelectOrderBy(orderByFieldsFromSelect []*OrderByField) ([]int, error) {
-	totalRows := len(t.ColumnValues[0])
+func (t *tableStore) getRowSequenceFromColumnDefAndSelectOrderBy(orderByFieldsFromSelect []*OrderByField) ([]int, error) {
+	totalRows := len(t.columnValues[0])
 	if len(orderByFieldsFromSelect) == 0 {
 		result := make([]int, totalRows)
 		for i := range totalRows {
@@ -151,26 +152,26 @@ func (t *Table) getRowSequenceFromColumnDefAndSelectOrderBy(orderByFieldsFromSel
 		return result, nil
 	}
 
-	tempClusteringKey := make([]ClusteringKeyEntry, totalRows)
+	tempClusteringKey := make([]clusteringKeyEntry, totalRows)
 	for _, orderByFieldFromSelect := range orderByFieldsFromSelect {
 		// Each field from SELECT ORDER by must be a clustering key
 		tableClusteringOrder := t.getClusteringKeyOrderByName(orderByFieldFromSelect.FieldName)
 		if tableClusteringOrder == ClusteringOrderNone {
 			return nil, fmt.Errorf("cannot process ORDER BY %s, this field is not a clustering key", orderByFieldFromSelect.FieldName)
 		}
-		colIdx := t.ColumnDefMap[orderByFieldFromSelect.FieldName]
+		colIdx := t.columnDefMap[orderByFieldFromSelect.FieldName]
 		var lastVal any
 		var lastTempClusteringKeySegment int
 		for i := range totalRows {
 			if lastVal == nil {
-				lastVal = t.ColumnValues[colIdx][i]
+				lastVal = t.columnValues[colIdx][i]
 				if tableClusteringOrder == orderByFieldFromSelect.ClusteringOrder {
 					lastTempClusteringKeySegment = 0
 				} else {
 					lastTempClusteringKeySegment = math.MaxInt32
 				}
 			} else {
-				if t.ColumnValues[colIdx][i] != lastVal {
+				if t.columnValues[colIdx][i] != lastVal {
 					if tableClusteringOrder == orderByFieldFromSelect.ClusteringOrder {
 						lastTempClusteringKeySegment++
 					} else {
@@ -179,14 +180,14 @@ func (t *Table) getRowSequenceFromColumnDefAndSelectOrderBy(orderByFieldsFromSel
 				}
 			}
 			if colIdx == 0 {
-				tempClusteringKey[i] = ClusteringKeyEntry{Idx: i, Key: fmt.Sprintf("0x%08X", lastTempClusteringKeySegment)}
+				tempClusteringKey[i] = clusteringKeyEntry{Idx: i, Key: fmt.Sprintf("0x%08X", lastTempClusteringKeySegment)}
 			} else {
-				tempClusteringKey[i] = ClusteringKeyEntry{Idx: i, Key: fmt.Sprintf("%s0x%08X", tempClusteringKey[i].Key, lastTempClusteringKeySegment)}
+				tempClusteringKey[i] = clusteringKeyEntry{Idx: i, Key: fmt.Sprintf("%s0x%08X", tempClusteringKey[i].Key, lastTempClusteringKeySegment)}
 			}
 		}
 	}
 
-	slices.SortFunc(tempClusteringKey, func(e1, e2 ClusteringKeyEntry) int {
+	slices.SortFunc(tempClusteringKey, func(e1, e2 clusteringKeyEntry) int {
 		return cmp.Compare(e1.Key, e2.Key)
 	})
 
@@ -197,12 +198,12 @@ func (t *Table) getRowSequenceFromColumnDefAndSelectOrderBy(orderByFieldsFromSel
 	return result, nil
 }
 
-func convertLexemToInternalType(lexem *Lexem, cqlType Type) (any, error) {
+func convertLexemToInternalType(lexem *Lexem, cqlType gocql.Type) (any, error) {
 	if lexem.T == LexemNull {
 		return nil, nil
 	}
 	switch cqlType {
-	case TypeBigInt, TypeInt, TypeTinyInt, TypeSmallInt, TypeVarint:
+	case gocql.TypeBigInt, gocql.TypeInt, gocql.TypeTinyInt, gocql.TypeSmallInt, gocql.TypeVarint:
 		if lexem.T == LexemIdent || lexem.T == LexemPointedIdent {
 			constVal, ok := GocqlmemEvalConstants[lexem.V]
 			if !ok {
@@ -223,7 +224,7 @@ func convertLexemToInternalType(lexem *Lexem, cqlType Type) (any, error) {
 		}
 		return val, nil
 
-	case TypeDouble, TypeFloat:
+	case gocql.TypeDouble, gocql.TypeFloat:
 		if lexem.T == LexemIdent || lexem.T == LexemPointedIdent {
 			constVal, ok := GocqlmemEvalConstants[lexem.V]
 			if !ok {
@@ -244,7 +245,7 @@ func convertLexemToInternalType(lexem *Lexem, cqlType Type) (any, error) {
 		}
 		return float64(val), nil
 
-	case TypeDecimal:
+	case gocql.TypeDecimal:
 		if lexem.T != LexemNumberLiteral {
 			return 0, fmt.Errorf("cannot convert %v to decimal, lexem type %d not supported", lexem.V, lexem.T)
 		}
@@ -254,13 +255,13 @@ func convertLexemToInternalType(lexem *Lexem, cqlType Type) (any, error) {
 		}
 		return val, nil
 
-	case TypeText, TypeVarchar:
+	case gocql.TypeText, gocql.TypeVarchar:
 		if lexem.T != LexemStringLiteral {
 			return 0, fmt.Errorf("cannot convert %v to string, lexem type %d not supported", lexem.V, lexem.T)
 		}
 		return lexem.V, nil
 
-	case TypeBoolean:
+	case gocql.TypeBoolean:
 		if lexem.T != LexemBoolLiteral {
 			return 0, fmt.Errorf("cannot convert %v to bool, lexem type %d not supported", lexem.V, lexem.T)
 		}
@@ -271,22 +272,23 @@ func convertLexemToInternalType(lexem *Lexem, cqlType Type) (any, error) {
 	}
 }
 
-func getRowIndexFromColumnDefAndInsert(columnValues [][]any, columnDefs []*ColumnDef, insertedColumnValues map[string]any) (int, bool, error) {
+func getRowIndexFromColumnDefAndInsert(columnValues [][]any, columnDefs []*columnDef, insertedColumnValues map[string]any) (int, int, bool, error) {
 	topIdx := 0                       // Top candidate for replacement
 	bottomIdx := len(columnValues[0]) // One step below the last candidate
 	var isExists bool
+	existingIdxCandidate := -1
 	for tableColIdx, tableColDef := range columnDefs {
-		insertedColVal := insertedColumnValues[tableColDef.Name]
+		insertedColVal := insertedColumnValues[tableColDef.name]
 		newStartIdx := -1
 		newEndIdx := -1
 		curIdx := topIdx
 		for curIdx < bottomIdx {
 			curVal := columnValues[tableColIdx][curIdx]
-			compareResult, err := CompareInternalType(curVal, insertedColVal, tableColDef.Type)
+			compareResult, err := compareInternalType(curVal, insertedColVal, tableColDef.columnType)
 			if err != nil {
-				return 0, false, fmt.Errorf("cannot compare existing %v to inserted %v", curVal, insertedColVal)
+				return -1, -1, false, fmt.Errorf("cannot compare existing %v to inserted %v", curVal, insertedColVal)
 			}
-			if tableColDef.ClusteringOrder == ClusteringOrderDesc {
+			if tableColDef.clusteringOrder == ClusteringOrderDesc {
 				compareResult *= -1
 			}
 			if compareResult == 0 {
@@ -294,10 +296,11 @@ func getRowIndexFromColumnDefAndInsert(columnValues [][]any, columnDefs []*Colum
 					newStartIdx = curIdx
 				}
 				newEndIdx = curIdx + 1
+				existingIdxCandidate = curIdx
 			} else if compareResult == 1 {
 				// curVal > insertedColVal (ASC) or curVal < insertedColVal (DESC), time to end looking
 				if newStartIdx == -1 {
-					return curIdx, false, nil
+					return curIdx, -1, false, nil
 				}
 				newEndIdx = curIdx
 				break
@@ -307,10 +310,10 @@ func getRowIndexFromColumnDefAndInsert(columnValues [][]any, columnDefs []*Colum
 		if newStartIdx == -1 {
 			// No equal or greater (ASC) or smaller (DESC) values found in this column,
 			// ready to insert in the previously harvested range startIdx,endIdx
-			if tableColDef.ClusteringOrder == ClusteringOrderAsc {
-				return bottomIdx, false, nil
+			if tableColDef.clusteringOrder == ClusteringOrderAsc {
+				return bottomIdx, -1, false, nil
 			}
-			return bottomIdx, false, nil
+			return bottomIdx, -1, false, nil
 		}
 		// Now we have a range of size at least to, say:
 		// newStartIdx = 5 (with value eq to the inserted one)
@@ -321,26 +324,29 @@ func getRowIndexFromColumnDefAndInsert(columnValues [][]any, columnDefs []*Colum
 		bottomIdx = newEndIdx
 
 		// If there are no more key columns, insert here
-		if tableColIdx == len(columnDefs)-1 || columnDefs[tableColIdx+1].PrimaryKey == PrimaryKeyNone {
+		if tableColIdx == len(columnDefs)-1 || columnDefs[tableColIdx+1].primaryKey == PrimaryKeyNone {
 			isExists = true
 			break
 		}
 	}
-	return bottomIdx, isExists, nil
+	if !isExists {
+		existingIdxCandidate = -1
+	}
+	return bottomIdx, existingIdxCandidate, isExists, nil
 }
 
-func (t *Table) execInternalUpsert(cmd *CommandInsert, insertedColumnValues map[string]any) (bool, error) {
-	for _, tableColDef := range t.ColumnDefs {
-		if tableColDef.PrimaryKey == PrimaryKeyPartition || tableColDef.PrimaryKey == PrimaryKeyClustering {
+func (t *tableStore) execInternalUpsert(cmd *CommandInsert, insertedColumnValues map[string]any) (bool, []gocql.ColumnInfo, [][]any, error) {
+	for _, tableColDef := range t.columnDefs {
+		if tableColDef.primaryKey == PrimaryKeyPartition || tableColDef.primaryKey == PrimaryKeyClustering {
 			var isPresent bool
 			for _, colName := range cmd.ColumnNames {
-				if colName == tableColDef.Name {
+				if colName == tableColDef.name {
 					isPresent = true
 					break
 				}
 			}
 			if !isPresent {
-				return false, fmt.Errorf("partition/clustering column key %s must be specified in the upsert command", tableColDef.Name)
+				return false, nil, nil, fmt.Errorf("partition/clustering column key %s must be specified in the upsert command", tableColDef.name)
 			}
 		}
 	}
@@ -348,63 +354,81 @@ func (t *Table) execInternalUpsert(cmd *CommandInsert, insertedColumnValues map[
 	var err error
 	var insertIdx int
 	var isAlreadyExists bool
+	var existingIdx int
 
-	if len(t.ColumnValues[0]) > 0 {
-		insertIdx, isAlreadyExists, err = getRowIndexFromColumnDefAndInsert(t.ColumnValues, t.ColumnDefs, insertedColumnValues)
+	if len(t.columnValues[0]) > 0 {
+		insertIdx, existingIdx, isAlreadyExists, err = getRowIndexFromColumnDefAndInsert(t.columnValues, t.columnDefs, insertedColumnValues)
 		if err != nil {
-			return false, fmt.Errorf("cannot find upsert idx for %v: %s", insertedColumnValues, err.Error())
+			return false, nil, nil, fmt.Errorf("cannot find upsert idx for %v: %s", insertedColumnValues, err.Error())
+		}
+
+		var existingColumnInfos []gocql.ColumnInfo
+		var existingValues [][]any
+		if isAlreadyExists {
+			existingColumnInfos = make([]gocql.ColumnInfo, len(t.columnDefs))
+			existingValues = make([][]any, 1)
+			existingValues[0] = make([]any, len(t.columnDefs))
+			for colIdx, tableColDef := range t.columnDefs {
+				existingColumnInfos[colIdx] = gocql.ColumnInfo{
+					Keyspace: cmd.GetCtxKeyspace(),
+					Table:    cmd.TableName,
+					Name:     tableColDef.name,
+					TypeInfo: newScalarType(tableColDef.columnType),
+				}
+				existingValues[0][colIdx] = t.columnValues[colIdx][existingIdx]
+			}
 		}
 
 		if isAlreadyExists && cmd.IfNotExists {
-			return false, nil
+			return false, existingColumnInfos, existingValues, nil
 		}
 
 		if isAlreadyExists && !cmd.IfNotExists {
-			return false, fmt.Errorf("cannot upsert duplicate %v", insertedColumnValues)
+			return false, existingColumnInfos, existingValues, fmt.Errorf("cannot upsert duplicate %v", insertedColumnValues)
 		}
 
-		for tableColIdx, tableColDef := range t.ColumnDefs {
-			val, ok := insertedColumnValues[tableColDef.Name]
+		for tableColIdx, tableColDef := range t.columnDefs {
+			val, ok := insertedColumnValues[tableColDef.name]
 			if !ok {
 				val = nil
 			}
-			t.ColumnValues[tableColIdx] = slices.Insert(t.ColumnValues[tableColIdx], insertIdx, val)
+			t.columnValues[tableColIdx] = slices.Insert(t.columnValues[tableColIdx], insertIdx, val)
 		}
 	} else {
-		for tableColIdx, tableColDef := range t.ColumnDefs {
-			val, ok := insertedColumnValues[tableColDef.Name]
+		for tableColIdx, tableColDef := range t.columnDefs {
+			val, ok := insertedColumnValues[tableColDef.name]
 			if !ok {
 				val = nil
 			}
-			t.ColumnValues[tableColIdx] = append(t.ColumnValues[tableColIdx], val)
+			t.columnValues[tableColIdx] = append(t.columnValues[tableColIdx], val)
 		}
 	}
-	return true, nil
+	return true, nil, nil, nil
 }
 
-func (t *Table) execTruncate(cmd *CommandTruncateTable) error {
-	t.Lock.Lock()
-	defer t.Lock.Unlock()
+func (t *tableStore) execTruncate(cmd *CommandTruncateTable) error {
+	t.lock.Lock()
+	defer t.lock.Unlock()
 
-	for i := range len(t.ColumnValues) {
-		t.ColumnValues[i] = t.ColumnValues[i][:0]
+	for i := range len(t.columnValues) {
+		t.columnValues[i] = t.columnValues[i][:0]
 	}
 	return nil
 }
 
-func (t *Table) execInsert(cmd *CommandInsert) (bool, error) {
-	t.Lock.Lock()
-	defer t.Lock.Unlock()
+func (t *tableStore) execInsert(cmd *CommandInsert) (bool, []gocql.ColumnInfo, [][]any, error) {
+	t.lock.Lock()
+	defer t.lock.Unlock()
 
 	var err error
 	insertedColumnValues := map[string]any{}
 	for i, name := range cmd.ColumnNames {
-		insertedColumnValues[name], err = convertLexemToInternalType(cmd.ColumnValues[i], t.ColumnDefs[t.ColumnDefMap[name]].Type)
+		insertedColumnValues[name], err = convertLexemToInternalType(cmd.ColumnValues[i], t.columnDefs[t.columnDefMap[name]].columnType)
 		if err != nil {
-			return false, fmt.Errorf("cannot cast upserted column %d: %s", i, err.Error())
+			return false, nil, nil, fmt.Errorf("cannot cast upserted column %d: %s", i, err.Error())
 		}
-		if insertedColumnValues[name] == nil && (t.ColumnDefs[t.ColumnDefMap[name]].PrimaryKey == PrimaryKeyPartition || t.ColumnDefs[t.ColumnDefMap[name]].PrimaryKey == PrimaryKeyClustering) {
-			return false, fmt.Errorf("cannot upsert NULL into a partition/clustered key column %s", name)
+		if insertedColumnValues[name] == nil && (t.columnDefs[t.columnDefMap[name]].primaryKey == PrimaryKeyPartition || t.columnDefs[t.columnDefMap[name]].primaryKey == PrimaryKeyClustering) {
+			return false, nil, nil, fmt.Errorf("cannot upsert NULL into a partition/clustered key column %s", name)
 		}
 	}
 
@@ -426,18 +450,18 @@ func isSelectAsterisk(tableName string, lexems []*Lexem) bool {
 	return false
 }
 
-func getResultNamesAndExpressions(tableName string, columnDefs []*ColumnDef, selectExpLexems [][]*Lexem, selectExpAsts []ast.Expr) ([]string, []ast.Expr, error) {
+func getResultNamesAndExpressions(tableName string, columnDefs []*columnDef, selectExpLexems [][]*Lexem, selectExpAsts []ast.Expr) ([]string, []ast.Expr, error) {
 	resultNames := []string{}
 	resultExps := []ast.Expr{}
 	for selectItemIdx, selectLexems := range selectExpLexems {
 		// Handle SELECT * and SELECT t.*
 		if isSelectAsterisk(tableName, selectLexems) {
 			for colIdx := range len(columnDefs) {
-				resultExp, err := parser.ParseExpr(columnDefs[colIdx].Name)
+				resultExp, err := parser.ParseExpr(columnDefs[colIdx].name)
 				if err != nil {
-					return nil, nil, fmt.Errorf("dev error, cannot parse column name %s: %s", columnDefs[colIdx].Name, err.Error())
+					return nil, nil, fmt.Errorf("dev error, cannot parse column name %s: %s", columnDefs[colIdx].name, err.Error())
 				}
-				resultNames = append(resultNames, columnDefs[colIdx].Name)
+				resultNames = append(resultNames, columnDefs[colIdx].name)
 				resultExps = append(resultExps, resultExp)
 			}
 			continue
@@ -487,21 +511,21 @@ func getResultNamesAndExpressions(tableName string, columnDefs []*ColumnDef, sel
 	return resultNames, resultExps, nil
 }
 
-func (t *Table) execSelect(cmd *CommandSelect, lastSelectedRowIdx int, maxRows int) ([]string, [][]any, []TypeInfo, int, error) {
-	t.Lock.RLock()
-	defer t.Lock.RUnlock()
+func (t *tableStore) execSelect(cmd *CommandSelect, lastSelectedRowIdx int, maxRows int) ([]string, [][]any, []gocql.TypeInfo, int, error) {
+	t.lock.RLock()
+	defer t.lock.RUnlock()
 
 	selectSeq, err := t.getRowSequenceFromColumnDefAndSelectOrderBy(cmd.OrderByFields)
 	if err != nil {
 		return nil, nil, nil, -1, err
 	}
 
-	resultNames, resultExps, err := getResultNamesAndExpressions(cmd.TableName, t.ColumnDefs, cmd.SelectExpLexems, cmd.SelectExpAsts)
+	resultNames, resultExps, err := getResultNamesAndExpressions(cmd.TableName, t.columnDefs, cmd.SelectExpLexems, cmd.SelectExpAsts)
 	if err != nil {
 		return nil, nil, nil, -1, err
 	}
 
-	typeInfos := make([]TypeInfo, len(resultNames))
+	typeInfos := make([]gocql.TypeInfo, len(resultNames))
 
 	var isAgg bool
 	aggCtxs := make([]*eval.EvalCtx, len(resultExps))
@@ -546,9 +570,9 @@ func (t *Table) execSelect(cmd *CommandSelect, lastSelectedRowIdx int, maxRows i
 		resultRow := []any{}
 		clear(valMap[""])
 		clear(valMap[cmd.TableName])
-		for colIdx, colDef := range t.ColumnDefs {
-			valMap[""][colDef.Name] = t.ColumnValues[colIdx][i]
-			valMap[cmd.TableName][colDef.Name] = t.ColumnValues[colIdx][i]
+		for colIdx, colDef := range t.columnDefs {
+			valMap[""][colDef.name] = t.columnValues[colIdx][i]
+			valMap[cmd.TableName][colDef.name] = t.columnValues[colIdx][i]
 		}
 
 		isInclude := true
@@ -582,13 +606,17 @@ func (t *Table) execSelect(cmd *CommandSelect, lastSelectedRowIdx int, maxRows i
 				}
 
 				if typeInfos[resultColIdx] == nil {
-					if tableColIdx, ok := t.ColumnDefMap[resultNames[resultColIdx]]; ok {
+					if tableColIdx, ok := t.columnDefMap[resultNames[resultColIdx]]; ok {
 						// A pure table column was selected, return its type
-						typeInfos[resultColIdx] = newScalarType(t.ColumnDefs[tableColIdx].Type)
+						typeInfos[resultColIdx] = newScalarType(t.columnDefs[tableColIdx].columnType)
 					} else {
 						// An expression used, return our best guess
 						if val != nil {
-							typeInfos[resultColIdx] = newScalarType(GuessInternalValueType(val))
+							typ, err := guessInternalValueType(val)
+							if err != nil {
+								return nil, nil, nil, -1, fmt.Errorf("cannot guess type of returned column %d: %s", resultColIdx, err.Error())
+							}
+							typeInfos[resultColIdx] = newScalarType(typ)
 						}
 					}
 				}
@@ -642,7 +670,7 @@ func getInsertedPriKeyColumnNameFromEql(tableName string, columnDefMap map[strin
 	}
 }
 
-func getInsertedPriKeyColumnValuePairFromEql(tableName string, columnDefs []*ColumnDef, columnDefMap map[string]int, eqlExp ast.BinaryExpr) (string, any, error) {
+func getInsertedPriKeyColumnValuePairFromEql(tableName string, columnDefs []*columnDef, columnDefMap map[string]int, eqlExp ast.BinaryExpr) (string, any, error) {
 	var colName string
 	var err error
 	var colValExp ast.Expr
@@ -678,7 +706,7 @@ func getInsertedPriKeyColumnValuePairFromEql(tableName string, columnDefs []*Col
 		return colName, nil, nil
 	}
 
-	internalColVal, err := CastToInternalType(colValAny, columnDefs[columnDefMap[colName]].Type)
+	internalColVal, err := castToInternalType(colValAny, columnDefs[columnDefMap[colName]].columnType)
 	if err != nil {
 		return "", nil, fmt.Errorf("cannot cast column %s value (%v): %s", colName, colValAny, err.Error())
 	}
@@ -686,7 +714,7 @@ func getInsertedPriKeyColumnValuePairFromEql(tableName string, columnDefs []*Col
 	return colName, internalColVal, nil
 }
 
-func harvestInsertedPriKeyValuesFromAstExp(tableName string, columnDefs []*ColumnDef, columnDefMap map[string]int, exp ast.Expr, colValueMap map[string]any) error {
+func harvestInsertedPriKeyValuesFromAstExp(tableName string, columnDefs []*columnDef, columnDefMap map[string]int, exp ast.Expr, colValueMap map[string]any) error {
 	switch typedExp := exp.(type) {
 	case *ast.BinaryExpr:
 		switch typedExp.Op {
@@ -713,7 +741,7 @@ func harvestInsertedPriKeyValuesFromAstExp(tableName string, columnDefs []*Colum
 }
 
 // Convert "WHERE col1 == 'a' and col2 == 100` into col1:'a',col2:100
-func getInsertedPriKeyValuesFromWhereClause(tableName string, columnDefs []*ColumnDef, columnDefMap map[string]int, whereExpAst ast.Expr) (map[string]any, error) {
+func getInsertedPriKeyValuesFromWhereClause(tableName string, columnDefs []*columnDef, columnDefMap map[string]int, whereExpAst ast.Expr) (map[string]any, error) {
 	// 1. Detect all colX = exp fragments
 	// 2. Ensure they are linked with AND
 	// 3. Ensure the combined col1==... AND COL2==... is at the top of ast
@@ -725,7 +753,7 @@ func getInsertedPriKeyValuesFromWhereClause(tableName string, columnDefs []*Colu
 	return colValueMap, nil
 }
 
-func calcValuesToUpdate(cmd *CommandUpdate, columnDefs []*ColumnDef, columnDefMap map[string]int, valMap eval.VarValuesMap) (map[string]any, error) {
+func calcValuesToUpdate(cmd *CommandUpdate, columnDefs []*columnDef, columnDefMap map[string]int, valMap eval.VarValuesMap) (map[string]any, error) {
 	var err error
 	updatedNonKeyColValues := map[string]any{}
 	for i, colSetExp := range cmd.ColumnSetExpressions {
@@ -734,7 +762,7 @@ func calcValuesToUpdate(cmd *CommandUpdate, columnDefs []*ColumnDef, columnDefMa
 		if err != nil {
 			return nil, fmt.Errorf("cannot calculate updated column %d: %s", i, err.Error())
 		}
-		updatedNonKeyColValues[colSetExp.Name], err = CastToInternalType(updatedNonKeyColValues[colSetExp.Name], columnDefs[columnDefMap[colSetExp.Name]].Type)
+		updatedNonKeyColValues[colSetExp.Name], err = castToInternalType(updatedNonKeyColValues[colSetExp.Name], columnDefs[columnDefMap[colSetExp.Name]].columnType)
 		if err != nil {
 			return nil, fmt.Errorf("cannot cast updated column %d: %s", i, err.Error())
 		}
@@ -742,15 +770,15 @@ func calcValuesToUpdate(cmd *CommandUpdate, columnDefs []*ColumnDef, columnDefMa
 	return updatedNonKeyColValues, nil
 }
 
-func (t *Table) execUpdate(cmd *CommandUpdate) (bool, error) {
-	t.Lock.Lock()
-	defer t.Lock.Unlock()
+func (t *tableStore) execUpdate(cmd *CommandUpdate) (bool, []gocql.ColumnInfo, [][]any, error) {
+	t.lock.Lock()
+	defer t.lock.Unlock()
 
-	for _, tableColDef := range t.ColumnDefs {
-		if tableColDef.PrimaryKey == PrimaryKeyPartition || tableColDef.PrimaryKey == PrimaryKeyClustering {
+	for _, tableColDef := range t.columnDefs {
+		if tableColDef.primaryKey == PrimaryKeyPartition || tableColDef.primaryKey == PrimaryKeyClustering {
 			for _, colSetExp := range cmd.ColumnSetExpressions {
-				if colSetExp.Name == tableColDef.Name {
-					return false, fmt.Errorf("partition/clustering column key %s cannot be modified in the update command", tableColDef.Name)
+				if colSetExp.Name == tableColDef.name {
+					return false, nil, nil, fmt.Errorf("partition/clustering column key %s cannot be modified in the update command", tableColDef.name)
 				}
 			}
 		}
@@ -762,23 +790,23 @@ func (t *Table) execUpdate(cmd *CommandUpdate) (bool, error) {
 	valMap[""] = map[string]any{}
 	valMap[cmd.TableName] = map[string]any{}
 	var isAlreadyExists bool
-	for i := range len(t.ColumnValues[0]) {
+	for i := range len(t.columnValues[0]) {
 		clear(valMap[""])
 		clear(valMap[cmd.TableName])
-		for colIdx, colDef := range t.ColumnDefs {
-			valMap[""][colDef.Name] = t.ColumnValues[colIdx][i]
-			valMap[cmd.TableName][colDef.Name] = t.ColumnValues[colIdx][i]
+		for colIdx, colDef := range t.columnDefs {
+			valMap[""][colDef.name] = t.columnValues[colIdx][i]
+			valMap[cmd.TableName][colDef.name] = t.columnValues[colIdx][i]
 		}
 
 		eCtx := eval.NewPlainEvalCtx(GocqlmemEvalFunctions, GocqlmemEvalConstants, valMap)
 		isUpdateAny, err := eCtx.Eval(cmd.WhereExpAst)
 		if err != nil {
-			return false, err
+			return false, nil, nil, err
 		}
 
 		isUpdate, ok := isUpdateAny.(bool)
 		if !ok {
-			return false, fmt.Errorf("where expressions return %T, expected bool", isUpdateAny)
+			return false, nil, nil, fmt.Errorf("where expressions return %T, expected bool", isUpdateAny)
 		}
 
 		if isUpdate {
@@ -787,27 +815,28 @@ func (t *Table) execUpdate(cmd *CommandUpdate) (bool, error) {
 			for _, colSetExp := range cmd.ColumnSetExpressions {
 
 				// We cannot calculate values in advance: b = b + 1 expressions are allowed, so do it here
-				updatedNonKeyColValues, err := calcValuesToUpdate(cmd, t.ColumnDefs, t.ColumnDefMap, valMap)
+				updatedNonKeyColValues, err := calcValuesToUpdate(cmd, t.columnDefs, t.columnDefMap, valMap)
 				if err != nil {
-					return false, fmt.Errorf("cannot calculate update value: %s", err.Error())
+					return false, nil, nil, fmt.Errorf("cannot calculate update value: %s", err.Error())
 
 				}
 
-				colDefIdx, ok := t.ColumnDefMap[colSetExp.Name]
+				colDefIdx, ok := t.columnDefMap[colSetExp.Name]
 				if !ok {
-					return false, fmt.Errorf("cannot update column %s, it is not in the table definition", colSetExp.Name)
+					return false, nil, nil, fmt.Errorf("cannot update column %s, it is not in the table definition", colSetExp.Name)
 				}
-				t.ColumnValues[colDefIdx][i] = updatedNonKeyColValues[colSetExp.Name]
+				t.columnValues[colDefIdx][i] = updatedNonKeyColValues[colSetExp.Name]
 			}
 		}
 	}
 
 	if isAlreadyExists {
-		return true, nil
+		// Should we return old content of the updated raw? I do not think so.
+		return true, nil, nil, nil
 	}
 
 	if cmd.IfExists {
-		return false, nil
+		return false, nil, nil, nil
 	}
 
 	// UPSERT
@@ -821,24 +850,24 @@ func (t *Table) execUpdate(cmd *CommandUpdate) (bool, error) {
 	}
 
 	// Primary key columns must be set, we have to convert "WHERE col1 = 'a' and col2 = 100` into col1:'a',col2:100
-	allInsertedColValues, err := getInsertedPriKeyValuesFromWhereClause(cmd.TableName, t.ColumnDefs, t.ColumnDefMap, cmd.WhereExpAst)
+	allInsertedColValues, err := getInsertedPriKeyValuesFromWhereClause(cmd.TableName, t.columnDefs, t.columnDefMap, cmd.WhereExpAst)
 	if err != nil {
-		return false, err
+		return false, nil, nil, err
 	}
 
 	// Prepare all values, we do not need any existing column data here, but take care of NULL "count" fields
 	clear(valMap[""])
 	clear(valMap[cmd.TableName])
-	for _, colDef := range t.ColumnDefs {
-		if colDef.Type == TypeCounter {
-			valMap[""][colDef.Name] = int64(0)
-			valMap[cmd.TableName][colDef.Name] = int64(0)
+	for _, colDef := range t.columnDefs {
+		if colDef.columnType == gocql.TypeCounter {
+			valMap[""][colDef.name] = int64(0)
+			valMap[cmd.TableName][colDef.name] = int64(0)
 		}
 	}
 
-	insertedNonKeyColValues, err := calcValuesToUpdate(cmd, t.ColumnDefs, t.ColumnDefMap, valMap)
+	insertedNonKeyColValues, err := calcValuesToUpdate(cmd, t.columnDefs, t.columnDefMap, valMap)
 	if err != nil {
-		return false, fmt.Errorf("cannot calculate insert value: %s", err.Error())
+		return false, nil, nil, fmt.Errorf("cannot calculate insert value: %s", err.Error())
 	}
 
 	// Add non-primary columns to the map
@@ -855,21 +884,21 @@ func (t *Table) execUpdate(cmd *CommandUpdate) (bool, error) {
 	return t.execInternalUpsert(&insertCmd, allInsertedColValues)
 }
 
-func (t *Table) execDelete(cmd *CommandDelete) (bool, error) {
-	t.Lock.Lock()
-	defer t.Lock.Unlock()
+func (t *tableStore) execDelete(cmd *CommandDelete) (bool, error) {
+	t.lock.Lock()
+	defer t.lock.Unlock()
 
 	var isApplied bool
 	valMap := eval.VarValuesMap{}
 	valMap[""] = map[string]any{}
 	valMap[cmd.TableName] = map[string]any{}
 	rowsToDelete := []int{}
-	for i := range len(t.ColumnValues[0]) {
+	for i := range len(t.columnValues[0]) {
 		clear(valMap[""])
 		clear(valMap[cmd.TableName])
-		for colIdx, colDef := range t.ColumnDefs {
-			valMap[""][colDef.Name] = t.ColumnValues[colIdx][i]
-			valMap[cmd.TableName][colDef.Name] = t.ColumnValues[colIdx][i]
+		for colIdx, colDef := range t.columnDefs {
+			valMap[""][colDef.name] = t.columnValues[colIdx][i]
+			valMap[cmd.TableName][colDef.name] = t.columnValues[colIdx][i]
 		}
 
 		isInclude := true
@@ -893,24 +922,24 @@ func (t *Table) execDelete(cmd *CommandDelete) (bool, error) {
 				rowsToDelete = append(rowsToDelete, i)
 			} else {
 				for _, colNameToDelete := range cmd.ColumnsToDelete {
-					colIdxToDelete, ok := t.ColumnDefMap[colNameToDelete]
+					colIdxToDelete, ok := t.columnDefMap[colNameToDelete]
 					if !ok {
 						return false, fmt.Errorf("cannot find column to delete: %s", colNameToDelete)
 					}
-					if t.ColumnDefs[colIdxToDelete].PrimaryKey != PrimaryKeyNone {
+					if t.columnDefs[colIdxToDelete].primaryKey != PrimaryKeyNone {
 						return false, fmt.Errorf("cannot delete key column value: %s", colNameToDelete)
 					}
 					isApplied = true
-					t.ColumnValues[colIdxToDelete][i] = nil
+					t.columnValues[colIdxToDelete][i] = nil
 				}
 			}
 		}
 	}
 
 	if len(rowsToDelete) > 0 {
-		for colIdx := range len(t.ColumnValues) {
+		for colIdx := range len(t.columnValues) {
 			for i := len(rowsToDelete) - 1; i >= 0; i-- {
-				t.ColumnValues[colIdx] = slices.Delete(t.ColumnValues[colIdx], i, i+1)
+				t.columnValues[colIdx] = slices.Delete(t.columnValues[colIdx], i, i+1)
 			}
 		}
 	}
