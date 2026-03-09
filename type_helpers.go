@@ -66,7 +66,7 @@ func isValidDataType(typ string) bool {
 
 func castToInternalType(val any, cqlType gocql.Type) (any, error) {
 	switch cqlType {
-	case gocql.TypeInt, gocql.TypeBigInt, gocql.TypeTinyInt, gocql.TypeSmallInt, gocql.TypeCounter:
+	case gocql.TypeInt, gocql.TypeBigInt, gocql.TypeTinyInt, gocql.TypeSmallInt, gocql.TypeCounter, gocql.TypeTimestamp, gocql.TypeDate, gocql.TypeTime:
 		return eval.CastToInt64(val)
 
 	case gocql.TypeDouble, gocql.TypeFloat:
@@ -91,7 +91,7 @@ func compareInternalType(left any, right any, cqlType gocql.Type) (int, error) {
 		return 0, fmt.Errorf("right is nil, not allowed in partition/clustering key comparison, dev error")
 	}
 	switch cqlType {
-	case gocql.TypeInt, gocql.TypeBigInt, gocql.TypeTinyInt, gocql.TypeSmallInt:
+	case gocql.TypeInt, gocql.TypeBigInt, gocql.TypeTinyInt, gocql.TypeSmallInt, gocql.TypeCounter, gocql.TypeTimestamp, gocql.TypeDate, gocql.TypeTime:
 		typedLeft, okLeft := any(left).(int64)
 		if !okLeft {
 			return 0, fmt.Errorf("left cast %v to int64 failed", left)
