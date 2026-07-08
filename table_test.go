@@ -20,33 +20,34 @@ func TestTableSelectOrderBy(t *testing.T) {
 			{"a", "a", "b", "c"},
 			{3, 2, 1, 1},
 		},
-		columnDefMap: map[string]int{"col1": 0, "col2": 1},
+		columnDefMap:            map[string]int{"col1": 0, "col2": 1, "col3": 2},
+		origColIdxToStoreColIdx: []int{0, 1, 2},
 	}
 
 	seq, err := table.getRowSequenceFromColumnDefAndSelectOrderBy([]*OrderByField{
-		{"col1", ClusteringOrderAsc},
-		{"col2", ClusteringOrderDesc},
+		{"col1", ClusteringOrderAsc, ClusteringOrderCaseSensitive},
+		{"col2", ClusteringOrderDesc, ClusteringOrderCaseSensitive},
 	})
 	assert.Nil(t, err)
 	assert.Equal(t, []int{0, 1, 2, 3}, seq)
 
 	seq, err = table.getRowSequenceFromColumnDefAndSelectOrderBy([]*OrderByField{
-		{"col1", ClusteringOrderDesc},
-		{"col2", ClusteringOrderAsc},
+		{"col1", ClusteringOrderDesc, ClusteringOrderCaseSensitive},
+		{"col2", ClusteringOrderAsc, ClusteringOrderCaseSensitive},
 	})
 	assert.Nil(t, err)
 	assert.Equal(t, []int{3, 2, 1, 0}, seq)
 
 	seq, err = table.getRowSequenceFromColumnDefAndSelectOrderBy([]*OrderByField{
-		{"col1", ClusteringOrderAsc},
-		{"col2", ClusteringOrderAsc},
+		{"col1", ClusteringOrderAsc, ClusteringOrderCaseSensitive},
+		{"col2", ClusteringOrderAsc, ClusteringOrderCaseSensitive},
 	})
 	assert.Nil(t, err)
 	assert.Equal(t, []int{1, 0, 2, 3}, seq)
 
 	seq, err = table.getRowSequenceFromColumnDefAndSelectOrderBy([]*OrderByField{
-		{"col1", ClusteringOrderDesc},
-		{"col2", ClusteringOrderDesc},
+		{"col1", ClusteringOrderDesc, ClusteringOrderCaseSensitive},
+		{"col2", ClusteringOrderDesc, ClusteringOrderCaseSensitive},
 	})
 	assert.Nil(t, err)
 	assert.Equal(t, []int{3, 2, 0, 1}, seq)
@@ -56,20 +57,20 @@ func TestTableSelectOrderBy(t *testing.T) {
 	assert.Equal(t, []int{0, 1, 2, 3}, seq)
 
 	seq, err = table.getRowSequenceFromColumnDefAndSelectOrderBy([]*OrderByField{
-		{"col1", ClusteringOrderDesc},
+		{"col1", ClusteringOrderDesc, ClusteringOrderCaseSensitive},
 	})
 	assert.Nil(t, err)
 	assert.Equal(t, []int{3, 2, 0, 1}, seq)
 
 	seq, err = table.getRowSequenceFromColumnDefAndSelectOrderBy([]*OrderByField{
-		{"col2", ClusteringOrderAsc},
+		{"col2", ClusteringOrderAsc, ClusteringOrderCaseSensitive},
 	})
 	assert.Nil(t, err)
 	assert.Equal(t, []int{3, 2, 1, 0}, seq)
 
-	seq, err = table.getRowSequenceFromColumnDefAndSelectOrderBy([]*OrderByField{
-		{"col3", ClusteringOrderAsc},
-		{"col2", ClusteringOrderAsc},
+	_, err = table.getRowSequenceFromColumnDefAndSelectOrderBy([]*OrderByField{
+		{"col3", ClusteringOrderAsc, ClusteringOrderCaseSensitive},
+		{"col2", ClusteringOrderAsc, ClusteringOrderCaseSensitive},
 	})
 	assert.Contains(t, err.Error(), "cannot process ORDER BY col3, this field is not a clustering key")
 }
@@ -226,8 +227,9 @@ func TestTableInsert(t *testing.T) {
 			{"col2", PrimaryKeyClustering, gocql.TypeBigInt, ClusteringOrderDesc},
 			{"col3", PrimaryKeyNone, gocql.TypeBoolean, ClusteringOrderNone},
 		},
-		columnValues: [][]any{[]any{}, []any{}, []any{}},
-		columnDefMap: map[string]int{"col1": 0, "col2": 1, "col3": 2},
+		columnValues:            [][]any{{}, {}, {}},
+		columnDefMap:            map[string]int{"col1": 0, "col2": 1, "col3": 2},
+		origColIdxToStoreColIdx: []int{0, 1, 2},
 	}
 
 	var cmd CommandInsert
@@ -238,7 +240,7 @@ func TestTableInsert(t *testing.T) {
 
 	cmd = CommandInsert{
 		ColumnNames:  []string{"col1", "col2", "col3"},
-		ColumnValues: []*Lexem{{LexemStringLiteral, "a"}, {LexemNumberLiteral, "1"}, {LexemNull, "NULL"}},
+		ColumnValues: []any{"a", 1, nil},
 		IfNotExists:  false,
 	}
 
@@ -253,10 +255,10 @@ func TestTableInsert(t *testing.T) {
 
 	cmd = CommandInsert{
 		ColumnNames:  []string{"col1", "col2", "col3"},
-		ColumnValues: []*Lexem{{LexemStringLiteral, "a"}, {LexemNumberLiteral, "2"}, {LexemBoolLiteral, "TRUE"}},
+		ColumnValues: []any{"a", 2, true},
 		IfNotExists:  false,
 	}
-	isApplied, existingColumnInfos, existingValues, err = table.execInsert(&cmd)
+	isApplied, _, _, err = table.execInsert(&cmd)
 	assert.Nil(t, err)
 	assert.True(t, isApplied)
 	assert.Equal(t, "a", table.columnValues[0][0])
@@ -268,10 +270,10 @@ func TestTableInsert(t *testing.T) {
 
 	cmd = CommandInsert{
 		ColumnNames:  []string{"col1", "col2", "col3"},
-		ColumnValues: []*Lexem{{LexemStringLiteral, "b"}, {LexemNumberLiteral, "0"}, {LexemBoolLiteral, "TRUE"}},
+		ColumnValues: []any{"b", 0, true},
 		IfNotExists:  false,
 	}
-	isApplied, existingColumnInfos, existingValues, err = table.execInsert(&cmd)
+	isApplied, _, _, err = table.execInsert(&cmd)
 	assert.Nil(t, err)
 	assert.True(t, isApplied)
 	assert.Equal(t, "a", table.columnValues[0][0])
@@ -313,6 +315,39 @@ func TestTableInsert(t *testing.T) {
 	assert.Equal(t, true, existingValues[0][2])
 }
 
+func TestTableSelectInNotIn(t *testing.T) {
+	table := tableStore{
+		columnDefs: []*columnDef{
+			{"col1", PrimaryKeyPartition, gocql.TypeText, ClusteringOrderAsc},
+			{"col2", PrimaryKeyClustering, gocql.TypeBigInt, ClusteringOrderDesc},
+		},
+		columnValues: [][]any{
+			{"a", "a", "c", "d"},
+			{int64(0), int64(1), int64(3), int64(3)},
+		},
+		columnDefMap:            map[string]int{"col1": 0, "col2": 1},
+		origColIdxToStoreColIdx: []int{0, 1},
+	}
+	var cmds []Command
+	var cmd *CommandSelect
+	var err error
+	var ok bool
+	var names []string
+	var values [][]any
+	preparedQueryParams := []any{"c", "d", []any{"a", "c"}, 1}
+
+	cmds, err = ParseCommands(`SELECT col1, col2, col1 in (?,?), col2 not in (5) FROM ks1.t1 WHERE col1 IN ? AND col2 NOT IN (?);`, preparedQueryParams)
+	assert.Nil(t, err)
+	cmd, ok = cmds[0].(*CommandSelect)
+	assert.True(t, ok)
+	names, values, _, _, err = table.execSelect(cmd, -1, -1, preparedQueryParams)
+	assert.Nil(t, err)
+	assert.Equal(t, "col1,col2,col1 IN (?,?),col2 NOT IN (5)", strings.Join(names, ","))
+	assert.Equal(t, 2, len(values))
+	assert.Equal(t, "[a 0 false true]", fmt.Sprintf("%v", values[0]))
+	assert.Equal(t, "[c 3 true true]", fmt.Sprintf("%v", values[1]))
+}
+
 func TestTableSelect(t *testing.T) {
 	table := tableStore{
 		columnDefs: []*columnDef{
@@ -323,7 +358,8 @@ func TestTableSelect(t *testing.T) {
 			{"a", "a", "c", "d"},
 			{int64(0), int64(1), int64(3), int64(3)},
 		},
-		columnDefMap: map[string]int{"col1": 0, "col2": 1, "col3": 2},
+		columnDefMap:            map[string]int{"col1": 0, "col2": 1},
+		origColIdxToStoreColIdx: []int{0, 1},
 	}
 	var cmds []Command
 	var cmd *CommandSelect
@@ -331,23 +367,24 @@ func TestTableSelect(t *testing.T) {
 	var ok bool
 	var names []string
 	var values [][]any
+	preparedQueryParams := []any{5, "a"}
 
-	cmds, err = ParseCommands(`SELECT t.col1+'a' AS c1, cast(col2*5 as text) as c2 FROM ks1.t WHERE t.col1 = 'a'`)
+	cmds, err = ParseCommands(`SELECT t.col1+'a' AS c1, cast(col2*? as text) as c2 FROM ks1.t WHERE t.col1 = ?`, preparedQueryParams)
 	assert.Nil(t, err)
 	cmd, ok = cmds[0].(*CommandSelect)
 	assert.True(t, ok)
-	names, values, _, _, err = table.execSelect(cmd, -1, -1)
+	names, values, _, _, err = table.execSelect(cmd, -1, -1, preparedQueryParams)
 	assert.Nil(t, err)
 	assert.Equal(t, "c1,c2", strings.Join(names, ","))
 	assert.Equal(t, 2, len(values))
 	assert.Equal(t, "[aa 0]", fmt.Sprintf("%v", values[0]))
 	assert.Equal(t, "[aa 5]", fmt.Sprintf("%v", values[1]))
 
-	cmds, err = ParseCommands(`SELECT *, col2 FROM ks1.t WHERE t.col1 = 'a' OR col2 = 3`)
+	cmds, err = ParseCommands(`SELECT *, col2 FROM ks1.t WHERE t.col1 = 'a' OR col2 = 3`, nil)
 	assert.Nil(t, err)
 	cmd, ok = cmds[0].(*CommandSelect)
 	assert.True(t, ok)
-	names, values, _, _, err = table.execSelect(cmd, -1, -1)
+	names, values, _, _, err = table.execSelect(cmd, -1, -1, preparedQueryParams)
 	assert.Nil(t, err)
 	assert.Equal(t, "col1,col2,col2", strings.Join(names, ","))
 	assert.Equal(t, 4, len(values))
@@ -356,15 +393,54 @@ func TestTableSelect(t *testing.T) {
 	assert.Equal(t, "[c 3 3]", fmt.Sprintf("%v", values[2]))
 	assert.Equal(t, "[d 3 3]", fmt.Sprintf("%v", values[3]))
 
-	cmds, err = ParseCommands(`SELECT count(*) as c FROM ks1.t WHERE col1='c'`)
+	cmds, err = ParseCommands(`SELECT count(*) as c FROM ks1.t WHERE col1='c'`, nil)
 	assert.Nil(t, err)
 	cmd, ok = cmds[0].(*CommandSelect)
 	assert.True(t, ok)
-	names, values, _, _, err = table.execSelect(cmd, -1, -1)
+	names, values, _, _, err = table.execSelect(cmd, -1, -1, preparedQueryParams)
 	assert.Nil(t, err)
 	assert.Equal(t, "c", strings.Join(names, ","))
 	assert.Equal(t, 1, len(values))
 	assert.Equal(t, "[1]", fmt.Sprintf("%v", values[0]))
+}
+
+func TestTableSelectByToken(t *testing.T) {
+	table := tableStore{
+		columnDefs: []*columnDef{
+			{"col1", PrimaryKeyPartition, gocql.TypeText, ClusteringOrderAsc},
+			{"col2", PrimaryKeyClustering, gocql.TypeBigInt, ClusteringOrderDesc},
+		},
+		columnValues: [][]any{
+			{"a", "b", "c", "d", "e", "f", "j"},
+			{int64(0), int64(1), int64(2), int64(3), int64(4), int64(5), int64(6)},
+		},
+		columnDefMap:            map[string]int{"col1": 0, "col2": 1},
+		origColIdxToStoreColIdx: []int{0, 1},
+	}
+	var cmds []Command
+	var cmd *CommandSelect
+	var err error
+	var ok bool
+	var names []string
+	var values [][]any
+	var preparedQueryParams []any
+
+	cmds, err = ParseCommands(`SELECT t.col1, token(col1) FROM ks1.t WHERE token(col1) >= -9223372036854775808 AND token(col1) <= 9223372036854775807`, nil)
+	assert.Nil(t, err)
+	cmd, ok = cmds[0].(*CommandSelect)
+	assert.True(t, ok)
+	names, values, _, _, err = table.execSelect(cmd, -1, -1, preparedQueryParams)
+	assert.Nil(t, err)
+	assert.Equal(t, "t.col1,token(col1)", strings.Join(names, ","))
+
+	// Ordered by token
+	assert.Equal(t, "[a -8839064797231613815]", fmt.Sprintf("%v", values[0]))
+	assert.Equal(t, "[c -8198557465434950441]", fmt.Sprintf("%v", values[1]))
+	assert.Equal(t, "[f -7907455435422653521]", fmt.Sprintf("%v", values[2]))
+	assert.Equal(t, "[e -4200008757497435756]", fmt.Sprintf("%v", values[3]))
+	assert.Equal(t, "[d -3786697372163639434]", fmt.Sprintf("%v", values[4]))
+	assert.Equal(t, "[j -416149536780825218]", fmt.Sprintf("%v", values[5]))
+	assert.Equal(t, "[b 8833996863197925870]", fmt.Sprintf("%v", values[6]))
 }
 
 func TestTableUpdate(t *testing.T) {
@@ -379,7 +455,8 @@ func TestTableUpdate(t *testing.T) {
 			{int64(0), int64(1), int64(3), int64(3)},
 			{int64(100), int64(101), int64(103), int64(103)},
 		},
-		columnDefMap: map[string]int{"col1": 0, "col2": 1, "col3": 2},
+		columnDefMap:            map[string]int{"col1": 0, "col2": 1, "col3": 2},
+		origColIdxToStoreColIdx: []int{0, 1, 2},
 	}
 
 	var cmds []Command
@@ -390,12 +467,13 @@ func TestTableUpdate(t *testing.T) {
 	var err error
 	var ok bool
 
-	cmds, err = ParseCommands(`UPDATE ks1.t SET col3=1001 WHERE t.col1 = 'a'`)
+	preparedQueryParams := []any{1001, "a"}
+	cmds, err = ParseCommands(`UPDATE ks1.t SET col3=? WHERE t.col1 = ?`, preparedQueryParams)
 	assert.Nil(t, err)
 	cmd, ok = cmds[0].(*CommandUpdate)
 	assert.True(t, ok)
 
-	isApplied, existingColumnInfos, existingValues, err = table.execUpdate(cmd)
+	isApplied, existingColumnInfos, existingValues, err = table.execUpdate(cmd, preparedQueryParams)
 	assert.Nil(t, err)
 	assert.True(t, isApplied)
 	assert.Nil(t, existingColumnInfos)
@@ -418,12 +496,12 @@ func TestTableUpdate(t *testing.T) {
 	assert.Equal(t, int64(103), table.columnValues[2][3])
 
 	// UPSERT
-	cmds, err = ParseCommands(`UPDATE ks1.t SET col3=1002 WHERE col1 = 'a' and t.col2 = 100`)
+	cmds, err = ParseCommands(`UPDATE ks1.t SET col3=1002 WHERE col1 = 'a' and t.col2 = 100`, preparedQueryParams)
 	assert.Nil(t, err)
 	cmd, ok = cmds[0].(*CommandUpdate)
 	assert.True(t, ok)
 
-	isApplied, existingColumnInfos, existingValues, err = table.execUpdate(cmd)
+	isApplied, existingColumnInfos, existingValues, err = table.execUpdate(cmd, preparedQueryParams)
 	assert.Nil(t, err)
 	assert.True(t, isApplied)
 	assert.Nil(t, existingColumnInfos)
@@ -464,7 +542,8 @@ func TestTableDelete(t *testing.T) {
 			{int64(0), int64(1), int64(3), int64(3)},
 			{int64(1), int64(2), int64(3), int64(4)},
 		},
-		columnDefMap: map[string]int{"col1": 0, "col2": 1, "col3": 2},
+		columnDefMap:            map[string]int{"col1": 0, "col2": 1, "col3": 2},
+		origColIdxToStoreColIdx: []int{0, 1, 2},
 	}
 	var cmds []Command
 	var cmd *CommandDelete
@@ -472,21 +551,23 @@ func TestTableDelete(t *testing.T) {
 	var ok bool
 	var isApplied bool
 
-	cmds, err = ParseCommands(`DELETE col3 FROM ks1.t WHERE t.col1 = 'a'`)
+	preparedQueryParams := []any{"a"}
+
+	cmds, err = ParseCommands(`DELETE col3 FROM ks1.t WHERE t.col1 = ?`, preparedQueryParams)
 	assert.Nil(t, err)
 	cmd, ok = cmds[0].(*CommandDelete)
 	assert.True(t, ok)
-	isApplied, err = table.execDelete(cmd)
+	isApplied, err = table.execDelete(cmd, preparedQueryParams)
 	assert.Nil(t, err)
 	assert.True(t, isApplied)
 	assert.Nil(t, table.columnValues[2][0])
 	assert.Nil(t, table.columnValues[2][1])
 
-	cmds, err = ParseCommands(`DELETE FROM ks1.t WHERE t.col1 = 'a'`)
+	cmds, err = ParseCommands(`DELETE FROM ks1.t WHERE t.col1 = 'a'`, nil)
 	assert.Nil(t, err)
 	cmd, ok = cmds[0].(*CommandDelete)
 	assert.True(t, ok)
-	isApplied, err = table.execDelete(cmd)
+	isApplied, err = table.execDelete(cmd, nil)
 	assert.Nil(t, err)
 	assert.True(t, isApplied)
 	assert.Equal(t, "c", table.columnValues[0][0])

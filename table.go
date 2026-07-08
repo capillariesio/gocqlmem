@@ -1,20 +1,26 @@
 package gocqlmem
 
 import (
+	"bytes"
 	"cmp"
+	"encoding/hex"
 	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
 	"math"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
+	"time"
+	"unicode"
 
 	gocql "github.com/apache/cassandra-gocql-driver/v2"
 	"github.com/capillariesio/gocqlmem/eval"
 	"github.com/shopspring/decimal"
+	"golang.org/x/text/runes"
+	"golang.org/x/text/transform"
+	"golang.org/x/text/unicode/norm"
 )
 
 type PrimaryKeyType int
@@ -33,11 +39,12 @@ type columnDef struct {
 }
 
 type tableStore struct {
-	columnDefs   []*columnDef // Partition,clustering,other
-	columnValues [][]any      // Partition,clustering,other
-	columnTokens [][]int64    // Partition keys only
-	columnDefMap map[string]int
-	lock         sync.RWMutex
+	columnDefs              []*columnDef // Partition,clustering,other - does NOT match the order in cmd.ColumnDefs
+	columnValues            [][]any      // Partition,clustering,other
+	columnTokens            [][]int64    // Partition keys only
+	columnDefMap            map[string]int
+	origColIdxToStoreColIdx []int // maps origColIdx->idxIn t.columnDefs We store columns as partitioning,clustering,other so this is used for  * selects
+	lock                    sync.RWMutex
 }
 
 func createColDef(name string, mapColType map[string]gocql.Type, primaryKeyType PrimaryKeyType, mapColClusteringOrder map[string]ClusteringOrderType) (*columnDef, error) {
@@ -63,10 +70,11 @@ func createColDef(name string, mapColType map[string]gocql.Type, primaryKeyType 
 
 func newTable(cmd *CommandCreateTable) (*tableStore, error) {
 	t := tableStore{
-		columnDefs:   make([]*columnDef, len(cmd.ColumnDefs)),
-		columnValues: make([][]any, len(cmd.ColumnDefs)),
-		columnTokens: make([][]int64, len(cmd.PartitionKeyColumns)),
-		columnDefMap: map[string]int{},
+		columnDefs:              make([]*columnDef, len(cmd.ColumnDefs)),
+		columnValues:            make([][]any, len(cmd.ColumnDefs)),
+		columnTokens:            make([][]int64, len(cmd.PartitionKeyColumns)),
+		columnDefMap:            map[string]int{},
+		origColIdxToStoreColIdx: make([]int, len(cmd.ColumnDefs)),
 	}
 
 	mapColType := map[string]gocql.Type{}
@@ -125,6 +133,10 @@ func newTable(cmd *CommandCreateTable) (*tableStore, error) {
 		}
 	}
 
+	for origColIdx, origColDef := range cmd.ColumnDefs {
+		t.origColIdxToStoreColIdx[origColIdx] = t.columnDefMap[origColDef.Name]
+	}
+
 	return &t, nil
 }
 
@@ -137,9 +149,209 @@ func (t *tableStore) getClusteringKeyOrderByName(name string) ClusteringOrderTyp
 	return ClusteringOrderNone
 }
 
+func getNumericValueSign(v any) (string, any, error) {
+	switch typedVal := v.(type) {
+	case int64:
+		if typedVal >= 0 {
+			return "0", typedVal, nil
+		}
+		return "-", -typedVal, nil
+
+	case float64:
+		if typedVal >= 0 {
+			return "0", typedVal, nil
+		}
+		return "-", -typedVal, nil
+
+	case decimal.Decimal:
+		if typedVal.Sign() >= 0 {
+			return "0", typedVal, nil
+		}
+		return "-", typedVal.Neg(), nil
+
+	default:
+		return "", nil, fmt.Errorf("type %T(%v) not supported", typedVal, typedVal)
+	}
+}
+
+const BeginningOfTimeMicro = int64(-62135596800000000) // time.Date(1, time.January, 1, 0, 0, 0, 0, time.UTC).UnixMicro()
+
+func (t *tableStore) buildKey(orderByFieldsFromSelect []*OrderByField, rowIdx int) (string, error) {
+	var keyBuffer bytes.Buffer
+	tfm := transform.Chain(norm.NFD, runes.Remove(runes.In(unicode.Mn)), norm.NFC)
+	flipReplacer := strings.NewReplacer("0", "9", "1", "8", "2", "7", "3", "6", "4", "5", "5", "4", "6", "3", "7", "2", "8", "1", "9", "0")
+
+	for _, keyField := range orderByFieldsFromSelect {
+		var stringValue string
+		var strippedFieldName string
+		var isToken bool
+		if strings.HasPrefix(keyField.FieldName, "token(") {
+			strippedFieldName = strings.ReplaceAll(strings.ReplaceAll(keyField.FieldName, "token(", ""), ")", "")
+			isToken = true
+		} else {
+			strippedFieldName = keyField.FieldName
+		}
+
+		fieldIdx, ok := t.columnDefMap[strippedFieldName]
+		if !ok {
+			return "", fmt.Errorf("cannot find field %s", strippedFieldName)
+		}
+		val := t.columnValues[fieldIdx][rowIdx]
+
+		if isToken {
+			tokenVal, err := callToken([]any{val})
+			if err != nil {
+				return "", fmt.Errorf("cannot calculate token of %v", val)
+			}
+			tokenValInt64, ok := tokenVal.(int64)
+			if !ok {
+				return "", fmt.Errorf("unexpectedly, token val in not int64: %T(%v)", tokenVal, tokenVal)
+			}
+			sign, absVal, err := getNumericValueSign(tokenValInt64)
+			if err != nil {
+				return "", err
+			}
+			stringValue = fmt.Sprintf("%s%020d", sign, absVal)
+			// If this is a negative value, flip every digit
+			if sign == "-" {
+				stringValue = flipReplacer.Replace(stringValue)
+			}
+		} else {
+			switch typedVal := val.(type) {
+			case int64:
+				sign, absVal, err := getNumericValueSign(typedVal)
+				if err != nil {
+					return "", err
+				}
+				stringValue = fmt.Sprintf("%s%020d", sign, absVal)
+				// If this is a negative value, flip every digit
+				if sign == "-" {
+					stringValue = flipReplacer.Replace(stringValue)
+				}
+
+			case float64:
+				// We should support numbers as big as 10^32 and with 32 digits afetr decimal point
+				sign, absVal, err := getNumericValueSign(typedVal)
+				if err != nil {
+					return "", err
+				}
+				stringValue = strings.ReplaceAll(fmt.Sprintf("%s%66s", sign, fmt.Sprintf("%.32f", absVal)), " ", "0")
+				// If this is a negative value, flip every digit
+				if sign == "-" {
+					stringValue = flipReplacer.Replace(stringValue)
+				}
+
+			case decimal.Decimal:
+				sign, absVal, err := getNumericValueSign(typedVal)
+				if err != nil {
+					return "", err
+				}
+				decVal, ok := absVal.(decimal.Decimal)
+				if !ok {
+					return "", fmt.Errorf("unexpectedly cannot convert value %v to type decimal2", typedVal)
+				}
+				floatVal, _ := decVal.Float64()
+				stringValue = strings.ReplaceAll(fmt.Sprintf("%s%66s", sign, fmt.Sprintf("%.32f", floatVal)), " ", "0")
+				// If this is a negative value, flip every digit
+				if sign == "-" {
+					stringValue = flipReplacer.Replace(stringValue)
+				}
+
+			case time.Time:
+				// We support time differences up to microsecond. Not nanosecond! Cassandra supports only milliseconds. Millis are our lingua franca.
+				stringValue = fmt.Sprintf("%020d", typedVal.UnixMicro()-BeginningOfTimeMicro)
+
+			case string:
+				// Normalize the string
+				transformedString, _, _ := transform.String(tfm, typedVal)
+				// Take only first 64 (or whatever we have in StringLen) characters
+				// use "%-64s" sprint format to pad with spaces on the right
+				formatString := fmt.Sprintf("%s-%ds", "%", 64)
+				stringValue = fmt.Sprintf(formatString, transformedString)[:64]
+				if keyField.CaseSensitivity == ClusteringOrderIgnoreCase {
+					stringValue = strings.ToUpper(stringValue)
+				}
+
+			case bool:
+				if typedVal {
+					stringValue = "T" // "F" < "T"
+				} else {
+					stringValue = "F"
+				}
+
+			default:
+				return "", fmt.Errorf("cannot build key, unsupported field data type %T(%v)", typedVal, typedVal)
+			}
+		}
+
+		if keyField.ClusteringOrder == ClusteringOrderDesc {
+			stringBytes := []byte(stringValue)
+			for i, b := range stringBytes {
+				stringBytes[i] = 0xFF - b
+			}
+			stringValue = hex.EncodeToString(stringBytes)
+		}
+
+		keyBuffer.WriteString(stringValue)
+	}
+
+	return keyBuffer.String(), nil
+}
+
 type clusteringKeyEntry struct {
 	Idx int
 	Key string
+}
+
+type sortNumericKeyEntry struct {
+	Idx int
+	Key int64
+}
+
+func (t *tableStore) getRowSequenceFromColumnDefAndPartitionFieldToken(partitionKeyFieldIdx int) ([]int, error) {
+	totalRows := len(t.columnValues[0])
+	tempClusteringKey := make([]sortNumericKeyEntry, totalRows)
+	for i := range totalRows {
+		tokenVal, err := callToken([]any{t.columnValues[partitionKeyFieldIdx][i]})
+		if err != nil {
+			return nil, fmt.Errorf("cannot calculate token of %v", t.columnValues[partitionKeyFieldIdx][i])
+		}
+		tokenValInt64, ok := tokenVal.(int64)
+		if !ok {
+			return nil, fmt.Errorf("unexpectedly, token val in not int64: %T(%v)", tokenVal, tokenVal)
+		}
+		tempClusteringKey[i] = sortNumericKeyEntry{Idx: i, Key: tokenValInt64}
+	}
+	slices.SortFunc(tempClusteringKey, func(e1, e2 sortNumericKeyEntry) int {
+		return cmp.Compare(e1.Key, e2.Key)
+	})
+
+	result := make([]int, len(tempClusteringKey))
+	for i := range len(tempClusteringKey) {
+		result[i] = tempClusteringKey[i].Idx
+	}
+	return result, nil
+}
+
+func (t *tableStore) getRowSequenceByKey(orderByFieldsFromSelect []*OrderByField) ([]int, error) {
+	totalRows := len(t.columnValues[0])
+	tempClusteringKey := make([]clusteringKeyEntry, totalRows)
+	for rowIdx := range totalRows {
+		key, err := t.buildKey(orderByFieldsFromSelect, rowIdx)
+		if err != nil {
+			return nil, err
+		}
+		tempClusteringKey[rowIdx] = clusteringKeyEntry{Idx: rowIdx, Key: key}
+	}
+	slices.SortFunc(tempClusteringKey, func(e1, e2 clusteringKeyEntry) int {
+		return cmp.Compare(e1.Key, e2.Key)
+	})
+
+	result := make([]int, len(tempClusteringKey))
+	for i := range len(tempClusteringKey) {
+		result[i] = tempClusteringKey[i].Idx
+	}
+	return result, nil
 }
 
 func (t *tableStore) getRowSequenceFromColumnDefAndSelectOrderBy(orderByFieldsFromSelect []*OrderByField) ([]int, error) {
@@ -198,6 +410,7 @@ func (t *tableStore) getRowSequenceFromColumnDefAndSelectOrderBy(orderByFieldsFr
 	return result, nil
 }
 
+/*
 func convertLexemToInternalType(lexem *Lexem, cqlType gocql.Type) (any, error) {
 	if lexem.T == LexemNull {
 		return nil, nil
@@ -249,11 +462,12 @@ func convertLexemToInternalType(lexem *Lexem, cqlType gocql.Type) (any, error) {
 		if lexem.T != LexemNumberLiteral {
 			return 0, fmt.Errorf("cannot convert %v to decimal, lexem type %d not supported", lexem.V, lexem.T)
 		}
-		val, err := decimal.NewFromString(lexem.V)
-		if err != nil {
-			return 0, fmt.Errorf("cannot convert %v to decimal: %s", lexem.V, err.Error())
+
+		d, ok := new(inf.Dec).SetString(lexem.V)
+		if !ok {
+			return 0, fmt.Errorf("cannot convert %v to decimal", lexem.V)
 		}
-		return val, nil
+		return d, nil
 
 	case gocql.TypeText, gocql.TypeVarchar:
 		if lexem.T != LexemStringLiteral {
@@ -271,6 +485,7 @@ func convertLexemToInternalType(lexem *Lexem, cqlType gocql.Type) (any, error) {
 		return 0, fmt.Errorf("unknown column type %v", cqlType)
 	}
 }
+*/
 
 func getRowIndexFromColumnDefAndInsert(columnValues [][]any, columnDefs []*columnDef, insertedColumnValues map[string]any) (int, int, bool, error) {
 	topIdx := 0                       // Top candidate for replacement
@@ -284,9 +499,9 @@ func getRowIndexFromColumnDefAndInsert(columnValues [][]any, columnDefs []*colum
 		curIdx := topIdx
 		for curIdx < bottomIdx {
 			curVal := columnValues[tableColIdx][curIdx]
-			compareResult, err := compareInternalType(curVal, insertedColVal, tableColDef.columnType)
+			compareResult, err := compareInternalKnownType(curVal, insertedColVal, tableColDef.columnType)
 			if err != nil {
-				return -1, -1, false, fmt.Errorf("cannot compare existing %v to inserted %v", curVal, insertedColVal)
+				return -1, -1, false, fmt.Errorf("cannot compare existing %v to inserted %v: %s", curVal, insertedColVal, err.Error())
 			}
 			if tableColDef.clusteringOrder == ClusteringOrderDesc {
 				compareResult *= -1
@@ -335,7 +550,7 @@ func getRowIndexFromColumnDefAndInsert(columnValues [][]any, columnDefs []*colum
 	return bottomIdx, existingIdxCandidate, isExists, nil
 }
 
-func (t *tableStore) execInternalUpsert(cmd *CommandInsert, insertedColumnValues map[string]any) (bool, []gocql.ColumnInfo, [][]any, error) {
+func (t *tableStore) execInternalUpsert(cmd *CommandInsert) (bool, []gocql.ColumnInfo, [][]any, error) {
 	for _, tableColDef := range t.columnDefs {
 		if tableColDef.primaryKey == PrimaryKeyPartition || tableColDef.primaryKey == PrimaryKeyClustering {
 			var isPresent bool
@@ -355,6 +570,24 @@ func (t *tableStore) execInternalUpsert(cmd *CommandInsert, insertedColumnValues
 	var insertIdx int
 	var isAlreadyExists bool
 	var existingIdx int
+
+	insertedColumnValues := map[string]any{}
+	for i, name := range cmd.ColumnNames {
+		// if t.columnDefs[t.columnDefMap[name]].columnType == gocql.TypeCounter {
+		// 	return false, nil, nil, fmt.Errorf("cannot insert value %T(%v) into counter column %s, only updates are supported", cmd.ColumnValues[i], cmd.ColumnValues[i], name)
+		// }
+		insertedColumnValues[name], err = sanitizeToInternalKnownType(cmd.ColumnValues[i], t.columnDefs[t.columnDefMap[name]].columnType)
+		if err != nil {
+			return false, nil, nil, fmt.Errorf("cannot cast column %d(%s) to internal type %v: %s", i, name, cmd.ColumnValues[i], err.Error())
+		}
+	}
+
+	// Initialize counter columns with zeroes
+	// for _, colDef := range t.columnDefs {
+	// 	if colDef.columnType == gocql.TypeCounter {
+	// 		insertedColumnValues[colDef.name] = int64(0)
+	// 	}
+	// }
 
 	if len(t.columnValues[0]) > 0 {
 		insertIdx, existingIdx, isAlreadyExists, err = getRowIndexFromColumnDefAndInsert(t.columnValues, t.columnDefs, insertedColumnValues)
@@ -406,7 +639,7 @@ func (t *tableStore) execInternalUpsert(cmd *CommandInsert, insertedColumnValues
 	return true, nil, nil, nil
 }
 
-func (t *tableStore) execTruncate(cmd *CommandTruncateTable) error {
+func (t *tableStore) execTruncate() error {
 	t.lock.Lock()
 	defer t.lock.Unlock()
 
@@ -420,21 +653,47 @@ func (t *tableStore) execInsert(cmd *CommandInsert) (bool, []gocql.ColumnInfo, [
 	t.lock.Lock()
 	defer t.lock.Unlock()
 
-	var err error
-	insertedColumnValues := map[string]any{}
+	// insertedColumnValues := map[string]any{}
 	for i, name := range cmd.ColumnNames {
-		insertedColumnValues[name], err = convertLexemToInternalType(cmd.ColumnValues[i], t.columnDefs[t.columnDefMap[name]].columnType)
-		if err != nil {
-			return false, nil, nil, fmt.Errorf("cannot cast upserted column %d: %s", i, err.Error())
+		if cmd.ColumnValues[i] == nil && (t.columnDefs[i].primaryKey == PrimaryKeyPartition || t.columnDefs[i].primaryKey == PrimaryKeyClustering) {
+			return false, nil, nil, fmt.Errorf("cannot insert NULL into a partition/clustered key column %s", name)
 		}
-		if insertedColumnValues[name] == nil && (t.columnDefs[t.columnDefMap[name]].primaryKey == PrimaryKeyPartition || t.columnDefs[t.columnDefMap[name]].primaryKey == PrimaryKeyClustering) {
-			return false, nil, nil, fmt.Errorf("cannot upsert NULL into a partition/clustered key column %s", name)
+		if t.columnDefs[t.columnDefMap[name]].columnType == gocql.TypeCounter {
+			return false, nil, nil, fmt.Errorf("cannot insert value %T(%v) into counter column %s, only updates/upserts are supported", cmd.ColumnValues[i], cmd.ColumnValues[i], name)
+		}
+		/*
+			eCtx := eval.NewPlainEvalCtx(GocqlmemEvalFunctions, GocqlmemEvalConstants, nil)
+			colVal, err := eCtx.Eval(cmd.ColumnValueExpAsts[i])
+			if err != nil {
+				return false, nil, nil, fmt.Errorf("cannot eval inserted column %d: %s", i, err.Error())
+			}
+			if colVal == nil && (t.columnDefs[t.columnDefMap[name]].primaryKey == PrimaryKeyPartition || t.columnDefs[t.columnDefMap[name]].primaryKey == PrimaryKeyClustering) {
+				return false, nil, nil, fmt.Errorf("cannot insert NULL into a partition/clustered key column %s", name)
+			}
+		*/
+		/*
+			insertedColumnValues[name], err = convertLexemToInternalType(cmd.ColumnValues[i], t.columnDefs[t.columnDefMap[name]].columnType)
+			if err != nil {
+				return false, nil, nil, fmt.Errorf("cannot cast upserted column %d: %s", i, err.Error())
+			}
+			if insertedColumnValues[name] == nil && (t.columnDefs[t.columnDefMap[name]].primaryKey == PrimaryKeyPartition || t.columnDefs[t.columnDefMap[name]].primaryKey == PrimaryKeyClustering) {
+				return false, nil, nil, fmt.Errorf("cannot upsert NULL into a partition/clustered key column %s", name)
+			}
+		*/
+	}
+
+	// Initialize counter fields with zeroes
+	for _, colDef := range t.columnDefs {
+		if colDef.columnType == gocql.TypeCounter {
+			cmd.ColumnNames = append(cmd.ColumnNames, colDef.name)
+			cmd.ColumnValues = append(cmd.ColumnValues, int64(0))
 		}
 	}
 
-	return t.execInternalUpsert(cmd, insertedColumnValues)
+	return t.execInternalUpsert(cmd)
 }
 
+// Looks for select expressions like "*" and "table1.*"
 func isSelectAsterisk(tableName string, lexems []*Lexem) bool {
 	if len(lexems) == 1 {
 		if lexems[0].T == LexemAsterisk {
@@ -450,6 +709,7 @@ func isSelectAsterisk(tableName string, lexems []*Lexem) bool {
 	return false
 }
 
+/*
 func getResultNamesAndExpressions(tableName string, columnDefs []*columnDef, selectExpLexems [][]*Lexem, selectExpAsts []ast.Expr) ([]string, []ast.Expr, error) {
 	resultNames := []string{}
 	resultExps := []ast.Expr{}
@@ -479,7 +739,7 @@ func getResultNamesAndExpressions(tableName string, columnDefs []*columnDef, sel
 				resultNames = append(resultNames, fmt.Sprintf("count(%s)", selectLexems[2].V))
 				resultExpString = "count()"
 			} else {
-				s, _, err := lexemsToString(lexemsUnderCount)
+				s, err := lexemsToStringForColumnExpression(lexemsUnderCount)
 				if err != nil {
 					return nil, nil, fmt.Errorf("cannot parse count(...): %s", err.Error())
 				}
@@ -498,7 +758,7 @@ func getResultNamesAndExpressions(tableName string, columnDefs []*columnDef, sel
 			continue
 		}
 		// Handle everything else
-		s, as, err := lexemsToString(selectLexems)
+		s, as, err := lexemsToStringForColumnExpression(selectLexems)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -510,35 +770,298 @@ func getResultNamesAndExpressions(tableName string, columnDefs []*columnDef, sel
 	}
 	return resultNames, resultExps, nil
 }
+*/
+/*
+func replaceAsteriskInColumnNames(tableName string, columnDefs []*columnDef, columnExpLexems [][]*Lexem, columnExpNames []string, columnExpAsts []ast.Expr) ([]string, []ast.Expr, error) {
+	newColumnExpNames := []string{}
+	newColumnExpAsts := []ast.Expr{}
+	for colIdx, columnExpLexems := range columnExpLexems {
+		// Handle SELECT * and SELECT t.*
+		if isSelectAsterisk(tableName, columnExpLexems) {
+			for colIdx := range len(columnDefs) {
+				asteriskColumnExpAst, err := parser.ParseExpr(columnDefs[colIdx].name)
+				if err != nil {
+					return nil, nil, fmt.Errorf("dev error, cannot parse column name %s: %s", columnDefs[colIdx].name, err.Error())
+				}
+				newColumnExpNames = append(newColumnExpNames, columnDefs[colIdx].name)
+				newColumnExpAsts = append(newColumnExpAsts, asteriskColumnExpAst)
+			}
+			continue
+		}
+		newColumnExpNames = append(newColumnExpNames, columnExpNames[colIdx])
+		newColumnExpAsts = append(newColumnExpAsts, columnExpAsts[colIdx])
+	}
+	return newColumnExpNames, newColumnExpAsts, nil
+}
+*/
 
-func (t *tableStore) execSelect(cmd *CommandSelect, lastSelectedRowIdx int, maxRows int) ([]string, [][]any, []gocql.TypeInfo, int, error) {
+// Handle SELECT * and SELECT t.*
+func replaceAsteriskInColumnName(tableName string, origColIdxToStoreColIdx []int, columnDefs []*columnDef, columnExpLexems []*Lexem) ([]string, []ast.Expr, error) {
+	if !isSelectAsterisk(tableName, columnExpLexems) {
+		return nil, nil, nil
+	}
+	newColumnExpNames := []string{}
+	newColumnExpAsts := []ast.Expr{}
+	for _, colIdx := range origColIdxToStoreColIdx {
+		asteriskColumnExpAst, err := parser.ParseExpr(columnDefs[colIdx].name)
+		if err != nil {
+			return nil, nil, fmt.Errorf("dev error, cannot parse column name %s: %s", columnDefs[colIdx].name, err.Error())
+		}
+		newColumnExpNames = append(newColumnExpNames, columnDefs[colIdx].name)
+		newColumnExpAsts = append(newColumnExpAsts, asteriskColumnExpAst)
+	}
+	return newColumnExpNames, newColumnExpAsts, nil
+}
+
+/*
+func populateFieldsUnderCount(tableName string, columnDefs []*columnDef, columnExpLexems [][]*Lexem, columnExpNames []string, columnExpAsts []ast.Expr) ([]string, []ast.Expr, error) {
+	newColumnExpNames := []string{}
+	newColumnExpAsts := []ast.Expr{}
+	for colIdx, columnExpLexems := range columnExpLexems {
+		// Handle count(*), count(t.*) count(field_name), count(null)
+		if len(columnExpLexems) >= 4 && (columnExpLexems[0].V == "count" || columnExpLexems[0].V == "COUNT") && columnExpLexems[1].V == "(" {
+			var lexemsUnderCount []*Lexem
+			if columnExpLexems[len(columnExpLexems)-2].T == LexemAs {
+				lexemsUnderCount = columnExpLexems[2 : len(columnExpLexems)-3]
+			} else {
+				lexemsUnderCount = columnExpLexems[2 : len(columnExpLexems)-1]
+			}
+			// Figure out new column name and a expression string
+			var resultExpString string
+			if isSelectAsterisk(tableName, lexemsUnderCount) {
+				// count(*), count(t.*)
+				newColumnExpNames = append(newColumnExpNames, fmt.Sprintf("count(%s)", columnExpLexems[2].V))
+				resultExpString = "count()"
+			} else {
+				// count(field_name), count(null)
+				newColumnExpNames = append(newColumnExpNames, fmt.Sprintf("count(%s)", lexemsToStringForColumnNames(lexemsUnderCount)))
+				newColumnExpAst, err := lexemsToStringForColumnExpression(lexemsUnderCount)
+				if err != nil {
+					return nil, nil, fmt.Errorf("cannot parse count(...): %s", err.Error())
+				}
+				resultExpString = fmt.Sprintf("count_if((%s) != NULL)", newColumnExpAst) // GocqlmemEvalConstants will take care of NULL
+			}
+			// Parse newly crafted expression string and add it to the result
+			resultExp, err := parser.ParseExpr(resultExpString)
+			if err != nil {
+				return nil, nil, fmt.Errorf("cannot parse count(...) expression [%s]: %s", resultExpString, err.Error())
+			}
+			newColumnExpAsts = append(newColumnExpAsts, resultExp)
+			continue
+		}
+		newColumnExpNames = append(newColumnExpNames, columnExpNames[colIdx])
+		newColumnExpAsts = append(newColumnExpAsts, columnExpAsts[colIdx])
+	}
+	return newColumnExpNames, newColumnExpAsts, nil
+}
+*/
+
+// Handle count(*), count(t.*) count(field_name), count(null)
+func populateFieldsUnderCount(tableName string, columnExpLexems []*Lexem) (string, ast.Expr, error) {
+	if len(columnExpLexems) < 4 || (columnExpLexems[0].V != "count" && columnExpLexems[0].V != "COUNT") || columnExpLexems[1].V != "(" {
+		return "", nil, nil
+	}
+	var lexemsUnderCount []*Lexem
+	if columnExpLexems[len(columnExpLexems)-2].T == LexemAs {
+		lexemsUnderCount = columnExpLexems[2 : len(columnExpLexems)-3]
+	} else {
+		lexemsUnderCount = columnExpLexems[2 : len(columnExpLexems)-1]
+	}
+	// Figure out new column name and a expression string
+	var newColumnExpName string
+	var newColumnExpAstString string
+	if isSelectAsterisk(tableName, lexemsUnderCount) {
+		// count(*), count(t.*)
+		newColumnExpName = fmt.Sprintf("count(%s)", columnExpLexems[2].V)
+		newColumnExpAstString = "count()"
+	} else {
+		// count(field_name), count(null)
+		newColumnExpName = fmt.Sprintf("count(%s)", lexemsToStringForColumnNames(lexemsUnderCount))
+		newColumnExpAst, err := lexemsToStringForColumnExpression(lexemsUnderCount)
+		if err != nil {
+			return "", nil, fmt.Errorf("cannot parse count(...): %s", err.Error())
+		}
+		newColumnExpAstString = fmt.Sprintf("count_if((%s) != NULL)", newColumnExpAst) // GocqlmemEvalConstants will take care of NULL
+	}
+	// Parse newly crafted expression string and add it to the result
+	newColumnExpAst, err := parser.ParseExpr(newColumnExpAstString)
+	if err != nil {
+		return "", nil, fmt.Errorf("cannot parse count(...) expression [%s]: %s", newColumnExpAstString, err.Error())
+	}
+
+	// We may have lost AS, catch up here
+	if columnExpLexems[len(columnExpLexems)-2].T == LexemAs {
+		newColumnExpName = columnExpLexems[len(columnExpLexems)-1].V
+	}
+
+	return newColumnExpName, newColumnExpAst, nil
+}
+
+func findTokenPartitionFieldsInLexems(lexems []*Lexem, tableName string, columnDefs []*columnDef) []string {
+	result := []string{}
+	// Follow field order: partition keys always go first
+	for _, colDef := range columnDefs {
+		if colDef.primaryKey != PrimaryKeyPartition {
+			continue
+		}
+		for lexemIdx, l := range lexems {
+			if l.V != colDef.name && l.V != tableName+"."+colDef.name {
+				continue
+			}
+			if lexemIdx < 2 || lexems[lexemIdx-1].V != "(" || lexems[lexemIdx-2].V != "token" {
+				continue
+			}
+			// We have a token(<partitioning key field>) expression, return this field name
+			finalFieldName := "token(" + colDef.name + ")"
+			var isAlreadyThere bool
+			for _, fieldName := range result {
+				if finalFieldName == fieldName {
+					isAlreadyThere = true
+					break
+				}
+			}
+			if !isAlreadyThere {
+				result = append(result, "token("+colDef.name+")")
+			}
+		}
+	}
+	return result
+}
+
+/*
+func findTokenPartitionFieldInLexems(lexems []*Lexem, tableName string, columnDefs []*columnDef) int {
+	// Follow field order: partition keys always go first
+	for colIdx, colDef := range columnDefs {
+		if colDef.primaryKey != PrimaryKeyPartition {
+			continue
+		}
+		for lexemIdx, l := range lexems {
+			if l.V != colDef.name && l.V != tableName+"."+colDef.name {
+				continue
+			}
+			if lexemIdx < 2 || lexems[lexemIdx-1].V != "(" || lexems[lexemIdx-2].V != "token" {
+				continue
+			}
+			// We have a token(<partitioning key field>) expression, return this field name
+			return colIdx
+		}
+	}
+	return -1
+}
+*/
+
+func guessTypeInfoForColumn(colName string, columnDefs []*columnDef, columnDefMap map[string]int, val any) (gocql.TypeInfo, error) {
+	if tableColIdx, ok := columnDefMap[colName]; ok {
+		// A pure table column was selected, return its type
+		return newScalarType(columnDefs[tableColIdx].columnType), nil
+	}
+	// An expression used, return our best guess
+	if val != nil {
+		typ, err := guessInternalValueType(val)
+		if err != nil {
+			return nil, fmt.Errorf("cannot guess type of returned column %s: %s", colName, err.Error())
+		}
+		return newScalarType(typ), nil
+	}
+	// Give up
+	return nil, nil
+}
+
+func (t *tableStore) execSelect(cmd *CommandSelect, lastSelectedRowIdx int, maxRows int, preparedQueryParams []any) ([]string, [][]any, []gocql.TypeInfo, int, error) {
 	t.lock.RLock()
 	defer t.lock.RUnlock()
 
-	selectSeq, err := t.getRowSequenceFromColumnDefAndSelectOrderBy(cmd.OrderByFields)
-	if err != nil {
-		return nil, nil, nil, -1, err
+	var selectSeq []int
+	var err error
+
+	// IMPORTANT!
+	// Essential, but sometimes overlooked Cassandra feature:
+	// When querying Cassandra using the token() function in the WHERE clause,
+	// the results are returned ordered by the hash value of the partition key,
+	// not the partition key itself. This is guaranteed for standard partitioners like Murmur3Partitioner.
+
+	orderByTokenFields := findTokenPartitionFieldsInLexems(cmd.WhereExpLexems, cmd.TableName, t.columnDefs)
+	if len(orderByTokenFields) > 0 {
+		// This method requires building keys for each row and sorting them
+		combinedOrderByFields := []*OrderByField{}
+		for _, tokenFieldName := range orderByTokenFields {
+			combinedOrderByFields = append(combinedOrderByFields, &OrderByField{tokenFieldName, ClusteringOrderAsc, ClusteringOrderCaseSensitive})
+		}
+		combinedOrderByFields = append(combinedOrderByFields, cmd.OrderByFields...)
+
+		selectSeq, err = t.getRowSequenceByKey(combinedOrderByFields)
+		if err != nil {
+			return nil, nil, nil, -1, fmt.Errorf("cannot get token-based row sequence: %s", err.Error())
+		}
+	} else {
+		// This method uses already sorted data
+		selectSeq, err = t.getRowSequenceFromColumnDefAndSelectOrderBy(cmd.OrderByFields)
+		if err != nil {
+			return nil, nil, nil, -1, fmt.Errorf("cannot get field-based row sequence: %s", err.Error())
+		}
 	}
 
-	resultNames, resultExps, err := getResultNamesAndExpressions(cmd.TableName, t.columnDefs, cmd.SelectExpLexems, cmd.SelectExpAsts)
-	if err != nil {
-		return nil, nil, nil, -1, err
+	/*
+		orderByTokenFieldIdx := findTokenPartitionFieldInLexems(cmd.WhereExpLexems, cmd.TableName, t.columnDefs)
+		if orderByTokenFieldIdx >= 0 {
+			// This method requires building keys for each row and sorting them
+			selectSeq, err = t.getRowSequenceFromColumnDefAndPartitionFieldToken(orderByTokenFieldIdx)
+			if err != nil {
+				return nil, nil, nil, -1, fmt.Errorf("cannot get token-based row sequence: %s", err.Error())
+			}
+		} else {
+			// This method uses already sorted data
+			selectSeq, err = t.getRowSequenceFromColumnDefAndSelectOrderBy(cmd.OrderByFields)
+			if err != nil {
+				return nil, nil, nil, -1, fmt.Errorf("cannot get field-based row sequence: %s", err.Error())
+			}
+		}
+	*/
+
+	// Unwrap asterisks. It would be nice to do that in the parser, but too bad we have no idea about table field defs when parsing.
+	newColumnExpNames := []string{}
+	newColumnExpAsts := []ast.Expr{}
+	for colIdx, columnExpLexems := range cmd.SelectExpLexems {
+		createdNames, createdAsts, err := replaceAsteriskInColumnName(cmd.TableName, t.origColIdxToStoreColIdx, t.columnDefs, columnExpLexems)
+		if err != nil {
+			return nil, nil, nil, -1, err
+		}
+		if len(createdNames) > 0 {
+			newColumnExpNames = append(newColumnExpNames, createdNames...)
+			newColumnExpAsts = append(newColumnExpAsts, createdAsts...)
+			continue
+		}
+		createdName, createdAst, err := populateFieldsUnderCount(cmd.TableName, columnExpLexems)
+		if err != nil {
+			return nil, nil, nil, -1, err
+		}
+		if createdName != "" {
+			newColumnExpNames = append(newColumnExpNames, createdName)
+			newColumnExpAsts = append(newColumnExpAsts, createdAst)
+			continue
+		}
+		newColumnExpNames = append(newColumnExpNames, cmd.SelectExpNames[colIdx])
+		newColumnExpAsts = append(newColumnExpAsts, cmd.SelectExpAsts[colIdx])
 	}
 
-	typeInfos := make([]gocql.TypeInfo, len(resultNames))
+	// WARNING: after this, cmd.SelectExpLexems can be shorter than cmd.SelectExpNames/cmd.SelectExpAsts because we unwrapped asterisks
+	cmd.SelectExpNames = newColumnExpNames
+	cmd.SelectExpAsts = newColumnExpAsts
+
+	typeInfos := make([]gocql.TypeInfo, len(cmd.SelectExpNames))
 
 	var isAgg bool
-	aggCtxs := make([]*eval.EvalCtx, len(resultExps))
-	for i, resultExp := range resultExps {
+	aggCtxs := make([]*eval.EvalCtx, len(cmd.SelectExpAsts))
+	for internalRowIdx, resultExp := range cmd.SelectExpAsts {
 		aggEnabled, aggFuncType, aggFuncArgs := eval.DetectRootAggFunc(resultExp)
 		if aggEnabled == eval.AggFuncEnabled {
-			aggCtxs[i], err = eval.NewAggEvalCtx(aggFuncType, aggFuncArgs, GocqlmemEvalFunctions, GocqlmemEvalConstants, nil)
+			aggCtxs[internalRowIdx], err = eval.NewAggEvalCtx(aggFuncType, aggFuncArgs, GocqlmemEvalFunctions, GocqlmemEvalConstants, nil)
 			if err != nil {
 				return nil, nil, nil, -1, err
 			}
 			isAgg = true
 		} else {
-			aggCtxs[i] = eval.NewPlainEvalCtx(GocqlmemEvalFunctions, GocqlmemEvalConstants, nil)
+			aggCtxs[internalRowIdx] = eval.NewPlainEvalCtx(GocqlmemEvalFunctions, GocqlmemEvalConstants, nil)
 		}
 	}
 
@@ -575,6 +1098,11 @@ func (t *tableStore) execSelect(cmd *CommandSelect, lastSelectedRowIdx int, maxR
 			valMap[cmd.TableName][colDef.name] = t.columnValues[colIdx][i]
 		}
 
+		// Add prepared params to the value map that is used for where and for select values, see below
+		if err = addPreparedQueryParamsToMap(valMap, preparedQueryParams); err != nil {
+			return nil, nil, nil, -1, fmt.Errorf("cannot apply prepared params: %s", err.Error())
+		}
+
 		isInclude := true
 		var ok bool
 		if cmd.WhereExpAst != nil {
@@ -591,7 +1119,7 @@ func (t *tableStore) execSelect(cmd *CommandSelect, lastSelectedRowIdx int, maxR
 		}
 
 		if isInclude {
-			for resultColIdx, selectExpAst := range resultExps {
+			for resultColIdx, selectExpAst := range cmd.SelectExpAsts {
 				var val any
 				var err error
 				if isAgg && (aggCtxs[resultColIdx].IsAggFuncEnabled() || !isFirstHitAlreadyPassed) || !isAgg {
@@ -606,17 +1134,10 @@ func (t *tableStore) execSelect(cmd *CommandSelect, lastSelectedRowIdx int, maxR
 				}
 
 				if typeInfos[resultColIdx] == nil {
-					if tableColIdx, ok := t.columnDefMap[resultNames[resultColIdx]]; ok {
-						// A pure table column was selected, return its type
-						typeInfos[resultColIdx] = newScalarType(t.columnDefs[tableColIdx].columnType)
-					} else {
-						// An expression used, return our best guess
-						if val != nil {
-							typ, err := guessInternalValueType(val)
-							if err != nil {
-								return nil, nil, nil, -1, fmt.Errorf("cannot guess type of returned column %d: %s", resultColIdx, err.Error())
-							}
-							typeInfos[resultColIdx] = newScalarType(typ)
+					if typeInfos[resultColIdx] == nil {
+						typeInfos[resultColIdx], err = guessTypeInfoForColumn(cmd.SelectExpNames[resultColIdx], t.columnDefs, t.columnDefMap, val)
+						if err != nil {
+							return nil, nil, nil, -1, fmt.Errorf("cannot obtain typeinfo for non-agg: %s", err.Error())
 						}
 					}
 				}
@@ -635,13 +1156,20 @@ func (t *tableStore) execSelect(cmd *CommandSelect, lastSelectedRowIdx int, maxR
 
 	if isAgg {
 		resultRow := []any{}
-		for resultColIdx := range resultExps {
-			resultRow = append(resultRow, aggCtxs[resultColIdx].GetValue())
+		for resultColIdx := range cmd.SelectExpAsts {
+			val := aggCtxs[resultColIdx].GetValue()
+			resultRow = append(resultRow, val)
+			if typeInfos[resultColIdx] == nil {
+				typeInfos[resultColIdx], err = guessTypeInfoForColumn(cmd.SelectExpNames[resultColIdx], t.columnDefs, t.columnDefMap, val)
+				if err != nil {
+					return nil, nil, nil, -1, fmt.Errorf("cannot obtain typeinfo for agg: %s", err.Error())
+				}
+			}
 		}
 		resultRows = append(resultRows, resultRow)
 	}
 
-	return resultNames, resultRows, typeInfos, newLastSelectedRowIdx, nil
+	return cmd.SelectExpNames, resultRows, typeInfos, newLastSelectedRowIdx, nil
 }
 
 func getInsertedPriKeyColumnNameFromEql(tableName string, columnDefMap map[string]int, exp ast.Expr) (string, error) {
@@ -688,11 +1216,10 @@ func getInsertedPriKeyColumnValuePairFromEql(tableName string, columnDefs []*col
 		if err != nil {
 			return "", nil, err
 		}
-		if colName != "" {
-			colValExp = eqlExp.X
-		} else {
+		if colName == "" {
 			return "", nil, fmt.Errorf("cannot find column ident in the expected col1 == ... , got %T == %T", eqlExp.X, eqlExp.Y)
 		}
+		colValExp = eqlExp.X
 	}
 
 	// Column value exp can be something like round(2.3), it does not have to be a literal
@@ -706,7 +1233,7 @@ func getInsertedPriKeyColumnValuePairFromEql(tableName string, columnDefs []*col
 		return colName, nil, nil
 	}
 
-	internalColVal, err := castToInternalType(colValAny, columnDefs[columnDefMap[colName]].columnType)
+	internalColVal, err := sanitizeToInternalKnownType(colValAny, columnDefs[columnDefMap[colName]].columnType)
 	if err != nil {
 		return "", nil, fmt.Errorf("cannot cast column %s value (%v): %s", colName, colValAny, err.Error())
 	}
@@ -716,6 +1243,15 @@ func getInsertedPriKeyColumnValuePairFromEql(tableName string, columnDefs []*col
 
 func harvestInsertedPriKeyValuesFromAstExp(tableName string, columnDefs []*columnDef, columnDefMap map[string]int, exp ast.Expr, colValueMap map[string]any) error {
 	switch typedExp := exp.(type) {
+	// TODO: besides "partition_key = value AND clustering_column = value", we need to support:
+	// partition_key = value AND clustering_column IN (value1, value2)
+	// TOKEN(user_id) > TOKEN(100) AND TOKEN(user_id) < TOKEN(200)
+	// support casting: user_id = CAST('101' AS uuid);
+	// More rules:
+	// You cannot use regular (non-indexed) columns in the WHERE clause unless you use ALLOW FILTERING
+	// You cannot use > or < on a partition key without the TOKEN function.
+	// No LIKE operator
+	// Mandatory Primary Key: If you omit the WHERE clause, the update will fail, or if you use a partially defined primary key, it will throw an error
 	case *ast.BinaryExpr:
 		switch typedExp.Op {
 		case token.LAND:
@@ -762,7 +1298,7 @@ func calcValuesToUpdate(cmd *CommandUpdate, columnDefs []*columnDef, columnDefMa
 		if err != nil {
 			return nil, fmt.Errorf("cannot calculate updated column %d: %s", i, err.Error())
 		}
-		updatedNonKeyColValues[colSetExp.Name], err = castToInternalType(updatedNonKeyColValues[colSetExp.Name], columnDefs[columnDefMap[colSetExp.Name]].columnType)
+		updatedNonKeyColValues[colSetExp.Name], err = sanitizeToInternalKnownType(updatedNonKeyColValues[colSetExp.Name], columnDefs[columnDefMap[colSetExp.Name]].columnType)
 		if err != nil {
 			return nil, fmt.Errorf("cannot cast updated column %d: %s", i, err.Error())
 		}
@@ -770,7 +1306,7 @@ func calcValuesToUpdate(cmd *CommandUpdate, columnDefs []*columnDef, columnDefMa
 	return updatedNonKeyColValues, nil
 }
 
-func (t *tableStore) execUpdate(cmd *CommandUpdate) (bool, []gocql.ColumnInfo, [][]any, error) {
+func (t *tableStore) execUpdate(cmd *CommandUpdate, preparedQueryParams []any) (bool, []gocql.ColumnInfo, [][]any, error) {
 	t.lock.Lock()
 	defer t.lock.Unlock()
 
@@ -798,20 +1334,50 @@ func (t *tableStore) execUpdate(cmd *CommandUpdate) (bool, []gocql.ColumnInfo, [
 			valMap[cmd.TableName][colDef.name] = t.columnValues[colIdx][i]
 		}
 
-		eCtx := eval.NewPlainEvalCtx(GocqlmemEvalFunctions, GocqlmemEvalConstants, valMap)
-		isUpdateAny, err := eCtx.Eval(cmd.WhereExpAst)
-		if err != nil {
-			return false, nil, nil, err
+		// Add prepared params to the value map that is used for where and for update values, see below
+		if err = addPreparedQueryParamsToMap(valMap, preparedQueryParams); err != nil {
+			return false, nil, nil, fmt.Errorf("cannot apply prepared params: %s", err.Error())
 		}
 
-		isUpdate, ok := isUpdateAny.(bool)
-		if !ok {
-			return false, nil, nil, fmt.Errorf("where expressions return %T, expected bool", isUpdateAny)
+		isUpdate := true
+
+		if cmd.WhereExpAst != nil {
+			eCtx := eval.NewPlainEvalCtx(GocqlmemEvalFunctions, GocqlmemEvalConstants, valMap)
+			isUpdateAnyFromWhere, err := eCtx.Eval(cmd.WhereExpAst)
+			if err != nil {
+				return false, nil, nil, err
+			}
+
+			var ok bool
+			isUpdate, ok = isUpdateAnyFromWhere.(bool)
+			if !ok {
+				return false, nil, nil, fmt.Errorf("where expressions return %T, expected bool", isUpdateAnyFromWhere)
+			}
+
+			if isUpdate {
+				isAlreadyExists = true
+			}
+		}
+
+		if isUpdate && cmd.IfExpAst != nil {
+			eCtx := eval.NewPlainEvalCtx(GocqlmemEvalFunctions, GocqlmemEvalConstants, valMap)
+			isUpdateAnyFromIf, err := eCtx.Eval(cmd.IfExpAst)
+			if err != nil {
+				return false, nil, nil, err
+			}
+
+			isUpdateFromIf, ok := isUpdateAnyFromIf.(bool)
+			if !ok {
+				return false, nil, nil, fmt.Errorf("where expressions return %T, expected bool", isUpdateAnyFromIf)
+			}
+
+			if !isUpdateFromIf {
+				// Last minute IF <condition> says we should not update
+				isUpdate = false
+			}
 		}
 
 		if isUpdate {
-			isAlreadyExists = true
-
 			for _, colSetExp := range cmd.ColumnSetExpressions {
 
 				// We cannot calculate values in advance: b = b + 1 expressions are allowed, so do it here
@@ -842,14 +1408,15 @@ func (t *tableStore) execUpdate(cmd *CommandUpdate) (bool, []gocql.ColumnInfo, [
 	// UPSERT
 
 	insertCmd := CommandInsert{
-		CtxKeyspace:  cmd.CtxKeyspace,
-		TableName:    cmd.TableName,
-		ColumnNames:  make([]string, 0),
-		ColumnValues: make([]*Lexem, 0),
-		IfNotExists:  false, // We know it does not exist, this is why update became upsert
+		CtxKeyspace: cmd.CtxKeyspace,
+		TableName:   cmd.TableName,
+		ColumnNames: make([]string, 0),
+		// ColumnValues: make([]*Lexem, 0),
+		IfNotExists: false, // We know it does not exist, this is why update became upsert
 	}
 
 	// Primary key columns must be set, we have to convert "WHERE col1 = 'a' and col2 = 100` into col1:'a',col2:100
+	// Cassandra supports more options (see TODO in harvestInsertedPriKeyValuesFromAstExp), but that's a lot to implement at the moment
 	allInsertedColValues, err := getInsertedPriKeyValuesFromWhereClause(cmd.TableName, t.columnDefs, t.columnDefMap, cmd.WhereExpAst)
 	if err != nil {
 		return false, nil, nil, err
@@ -876,15 +1443,15 @@ func (t *tableStore) execUpdate(cmd *CommandUpdate) (bool, []gocql.ColumnInfo, [
 	}
 
 	insertedColCount := 0
-	for insertedColName := range allInsertedColValues {
+	for insertedColName, insertedColValue := range allInsertedColValues {
 		insertCmd.ColumnNames = append(insertCmd.ColumnNames, insertedColName)
-		insertCmd.ColumnValues = append(insertCmd.ColumnValues, &Lexem{LexemNull, ""}) // Not used by upsert, all used values are in insertedColumnValues
+		insertCmd.ColumnValues = append(insertCmd.ColumnValues, insertedColValue)
 		insertedColCount++
 	}
-	return t.execInternalUpsert(&insertCmd, allInsertedColValues)
+	return t.execInternalUpsert(&insertCmd)
 }
 
-func (t *tableStore) execDelete(cmd *CommandDelete) (bool, error) {
+func (t *tableStore) execDelete(cmd *CommandDelete, preparedQueryParams []any) (bool, error) {
 	t.lock.Lock()
 	defer t.lock.Unlock()
 
@@ -899,6 +1466,11 @@ func (t *tableStore) execDelete(cmd *CommandDelete) (bool, error) {
 		for colIdx, colDef := range t.columnDefs {
 			valMap[""][colDef.name] = t.columnValues[colIdx][i]
 			valMap[cmd.TableName][colDef.name] = t.columnValues[colIdx][i]
+		}
+
+		// Add prepared params to the value map that is used for where and for select values, see below
+		if err := addPreparedQueryParamsToMap(valMap, preparedQueryParams); err != nil {
+			return false, fmt.Errorf("cannot apply prepared params: %s", err.Error())
 		}
 
 		isInclude := true

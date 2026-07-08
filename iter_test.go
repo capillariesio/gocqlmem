@@ -4,8 +4,8 @@ import (
 	"testing"
 
 	gocql "github.com/apache/cassandra-gocql-driver/v2"
-	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
+	"gopkg.in/inf.v0"
 )
 
 func TestColumnsAndRowData(t *testing.T) {
@@ -13,7 +13,7 @@ func TestColumnsAndRowData(t *testing.T) {
 	assert.Nil(t, s.Query("CREATE KEYSPACE ks1").Exec())
 	assert.Nil(t, s.Query("CREATE TABLE ks1.t1 (f_int int, f_text text, f_bool boolean, f_float float, f_dec decimal, primary key (f_int))").Exec())
 
-	dest := map[string]interface{}{}
+	dest := map[string]any{}
 	var isApplied bool
 	var err error
 	isApplied, err = s.Query("INSERT INTO ks1.t1 (f_int, f_text, f_bool, f_float, f_dec) VALUES (1,'1', TRUE, 1.1, 2.2)").MapScanCAS(dest)
@@ -52,11 +52,36 @@ func TestColumnsAndRowData(t *testing.T) {
 	rowData, err := iter.RowData()
 	assert.Nil(t, err)
 	assert.Equal(t, 5, len(rowData.Columns))
-	assert.Equal(t, int64(0), rowData.Values[0])
-	assert.Equal(t, "", rowData.Values[1])
-	assert.Equal(t, false, rowData.Values[2])
-	assert.Equal(t, float64(0.0), rowData.Values[3])
-	assert.Equal(t, decimal.NewFromFloat(0.0), rowData.Values[4])
+	assert.Equal(t, int32(0), *(rowData.Values[0].(*int32)))
+	assert.Equal(t, "", *(rowData.Values[1].(*string)))
+	assert.Equal(t, false, *(rowData.Values[2].(*bool)))
+	assert.Equal(t, float32(0.0), *(rowData.Values[3].(*float32)))
+	assert.Equal(t, *new(inf.Dec), *(rowData.Values[4].(*inf.Dec)))
+}
+
+func TestIterScan(t *testing.T) {
+	s := NewGocqlmemSession()
+	assert.Nil(t, s.Query("CREATE KEYSPACE ks1").Exec())
+	assert.Nil(t, s.Query("CREATE TABLE ks1.t1 (f_int int, f_text text, f_bool boolean, f_float float, f_dec decimal, primary key (f_int))").Exec())
+
+	err := s.Query("INSERT INTO ks1.t1 (f_int, f_text, f_bool, f_float, f_dec) VALUES (1, '1', TRUE, 1.1, 2.2)").Exec()
+	assert.Nil(t, err)
+
+	iter := s.Query(`SELECT f_int, f_text, f_bool, f_float, f_dec FROM ks1.t1`).Iter()
+	assert.Nil(t, iter.Err())
+
+	resultInt := int32(0)
+	resultText := ""
+	resultBool := false
+	resultFloat := float32(0.0)
+	resultDec := *float64ToDecNoCheck(float64(0.0))
+	ok := iter.Scan(&resultInt, &resultText, &resultBool, &resultFloat, &resultDec)
+	assert.True(t, ok)
+	assert.Equal(t, int32(1), resultInt)
+	assert.Equal(t, "1", resultText)
+	assert.Equal(t, true, resultBool)
+	assert.Equal(t, float32(1.1), resultFloat)
+	assert.Equal(t, *float64ToDecNoCheck(float64(2.2)), resultDec)
 }
 
 func TestScanner(t *testing.T) {
@@ -64,29 +89,31 @@ func TestScanner(t *testing.T) {
 	assert.Nil(t, s.Query("CREATE KEYSPACE ks1").Exec())
 	assert.Nil(t, s.Query("CREATE TABLE ks1.t1 (f_int int, f_text text, f_bool boolean, f_float float, f_dec decimal, primary key (f_int))").Exec())
 
-	dest := map[string]interface{}{}
+	dest := map[string]any{}
 	var isApplied bool
 	var err error
-	isApplied, err = s.Query("INSERT INTO ks1.t1 (f_int, f_text, f_bool, f_float, f_dec) VALUES (1,'1', TRUE, 1.1, 2.2)").MapScanCAS(dest)
+	isApplied, err = s.Query("INSERT INTO ks1.t1 (f_int, f_bigint,  f_text, f_bool, f_float, f_dec) VALUES (1, 2, '1', TRUE, 1.1, 2.2)").MapScanCAS(dest)
 	assert.Nil(t, err)
 	assert.True(t, isApplied)
 
-	resultInt := int64(0)
+	resultInt := int32(0)
+	resultBigint := int64(0)
 	resultText := ""
 	resultBool := false
 	resultFloat := float32(0.0)
-	resultDec := decimal.NewFromFloat(2.2)
+	resultDec := *float64ToDecNoCheck(float64(2.2))
 
-	iter := s.Query(`SELECT f_int, f_text, f_bool, f_float, f_dec FROM ks1.t1`).Iter()
+	iter := s.Query(`SELECT f_int, f_bigint, f_text, f_bool, f_float, f_dec FROM ks1.t1`).Iter()
 	assert.Nil(t, err)
 	scanner := iter.Scanner()
 	for scanner.Next() {
 		err = scanner.Scan(&resultInt, &resultText, &resultBool, &resultFloat, &resultDec)
 		assert.Nil(t, err)
-		assert.Equal(t, int64(1), resultInt)
+		assert.Equal(t, int32(1), resultInt)
+		assert.Equal(t, int64(2), resultBigint)
 		assert.Equal(t, "1", resultText)
 		assert.Equal(t, true, resultBool)
 		assert.Equal(t, float32(1.1), resultFloat)
-		assert.Equal(t, decimal.NewFromFloat(2.2), resultDec)
+		assert.Equal(t, *float64ToDecNoCheck(float64(2.2)), resultDec)
 	}
 }

@@ -3,19 +3,24 @@ package gocqlmem
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
-	"hash"
 	"math"
 	"strconv"
 	"time"
 
+	gocql "github.com/apache/cassandra-gocql-driver/v2"
 	"github.com/capillariesio/gocqlmem/eval"
 	"github.com/shopspring/decimal"
 	"github.com/twmb/murmur3"
+	"gopkg.in/inf.v0"
 )
 
+// Assuming that all CQL functions are lowercase
 var GocqlmemEvalFunctions = map[string]eval.EvalFunction{
 	"cast":              callCast,
+	"cqlin":             callCqlIn,
+	"cqlnotin":          callCqlNotIn,
 	"token":             callToken,
 	"current_timestamp": callCurrentTimestamp,
 	"current_date":      callCurrentDate,
@@ -25,6 +30,8 @@ var GocqlmemEvalFunctions = map[string]eval.EvalFunction{
 	"log":               callLog,
 	"log10":             callLog10,
 	"round":             callRound,
+	"now":               callNow,
+	"totimestamp":       callToTimestamp,
 }
 
 /*
@@ -72,6 +79,8 @@ func callCast(args []any) (any, error) {
 			typedValInt64 = int64(typedVal)
 		case int64:
 			typedValInt64 = typedVal
+		default:
+			return nil, fmt.Errorf("cannot cast int %v to %v", typedVal, dataType)
 		}
 		switch dataType {
 		case DataTypeBigint, DataTypeSmallint, DataTypeTinyint, DataTypeInt, DataTypeVarint:
@@ -79,7 +88,7 @@ func callCast(args []any) (any, error) {
 		case DataTypeFloat, DataTypeDouble:
 			return float64(typedValInt64), nil
 		case DataTypeDecimal:
-			return decimal.NewFromInt(typedValInt64), nil
+			return *inf.NewDec(typedValInt64, 0), nil
 		case DataTypeText, DataTypeVarchar:
 			return strconv.FormatInt(typedValInt64, 10), nil
 		default:
@@ -92,6 +101,8 @@ func callCast(args []any) (any, error) {
 			typedValFloat64 = float64(typedVal)
 		case float64:
 			typedValFloat64 = typedVal
+		default:
+			return nil, fmt.Errorf("cannot cast float %v to %v", typedVal, dataType)
 		}
 		switch dataType {
 		case DataTypeBigint, DataTypeSmallint, DataTypeTinyint, DataTypeInt, DataTypeVarint:
@@ -99,6 +110,12 @@ func callCast(args []any) (any, error) {
 		case DataTypeFloat, DataTypeDouble:
 			return float64(typedValFloat64), nil
 		case DataTypeDecimal:
+			// inf.Dec
+			// valDec, err := float64ToDec(typedValFloat64)
+			// if !ok {
+			// 	return nil, fmt.Errorf("cannot cast float %f to decimal: %s", typedValFloat64, err.Error())
+			// }
+			// return *valDec, nil
 			return decimal.NewFromFloat(typedValFloat64), nil
 		case DataTypeText, DataTypeVarchar:
 			return strconv.FormatFloat(typedValFloat64, 'f', -1, 64), nil
@@ -111,19 +128,32 @@ func callCast(args []any) (any, error) {
 		case DataTypeText, DataTypeVarchar:
 			if typedVal {
 				return "TRUE", nil
-			} else {
-				return "FALSE", nil
 			}
+			return "FALSE", nil
 		default:
 			return nil, fmt.Errorf("cannot cast bool %v to %v", typedVal, dataType)
 		}
+	// case inf.Dec:
+	// 	switch dataType {
+	// 	case DataTypeBigint, DataTypeSmallint, DataTypeTinyint, DataTypeInt, DataTypeVarint:
+	// 		return int64(math.Pow(10, float64(-typedVal.Scale())) * float64(typedVal.UnscaledBig().Int64())), nil
+	// 	case DataTypeFloat, DataTypeDouble:
+	// 		return decToFloat64(&typedVal), nil
+	// 	case DataTypeDecimal:
+	// 		return typedVal, nil
+	// 	case DataTypeText, DataTypeVarchar:
+	// 		return typedVal.String(), nil
+	// 	default:
+	// 		return nil, fmt.Errorf("cannot cast decimal %v to %v", typedVal, dataType)
+	// 	}
+
 	case decimal.Decimal:
 		switch dataType {
 		case DataTypeBigint, DataTypeSmallint, DataTypeTinyint, DataTypeInt, DataTypeVarint:
 			return typedVal.BigInt().Int64(), nil
 		case DataTypeFloat, DataTypeDouble:
-			floatVal, _ := typedVal.Float64()
-			return floatVal, nil
+			f, _ := typedVal.Float64()
+			return f, nil
 		case DataTypeDecimal:
 			return typedVal, nil
 		case DataTypeText, DataTypeVarchar:
@@ -145,6 +175,32 @@ func callCast(args []any) (any, error) {
 	}
 }
 
+func callCqlIn(args []any) (any, error) {
+	if len(args) < 2 {
+		return nil, errors.New("cannot evaluate IN: no values in the list")
+	}
+
+	for i := 1; i < len(args); i++ {
+		if compareInternalInExpressions(args[0], args[i]) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func callCqlNotIn(args []any) (any, error) {
+	if len(args) < 2 {
+		return nil, errors.New("cannot evaluate NOT IN: no values in the list")
+	}
+
+	for i := 1; i < len(args); i++ {
+		if compareInternalInExpressions(args[0], args[i]) {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
 func callToken(args []any) (any, error) {
 	if err := eval.CheckArgs("token", 1, len(args)); err != nil {
 		return nil, err
@@ -163,12 +219,14 @@ func callToken(args []any) (any, error) {
 			typedValInt64 = int64(typedVal)
 		case int64:
 			typedValInt64 = typedVal
+		default:
+			return nil, fmt.Errorf("cannot token int %v", typedVal)
 		}
 		b := make([]byte, 8)
 		binary.LittleEndian.PutUint64(b, uint64(typedValInt64))
-		var h64 hash.Hash64 = murmur3.New64()
+		h64 := murmur3.New64()
 		h64.Write(b)
-		return h64.Sum64(), nil
+		return int64(h64.Sum64()), nil
 
 	case float32, float64:
 		var typedValFloat64 float64
@@ -177,15 +235,17 @@ func callToken(args []any) (any, error) {
 			typedValFloat64 = float64(typedVal)
 		case float64:
 			typedValFloat64 = typedVal
+		default:
+			return nil, fmt.Errorf("cannot token float %v", typedVal)
 		}
 		var buf bytes.Buffer
 		err := binary.Write(&buf, binary.LittleEndian, typedValFloat64)
 		if err != nil {
 			return nil, fmt.Errorf("cannot token float %v, binary fails: %s", typedVal, err.Error())
 		}
-		var h64 hash.Hash64 = murmur3.New64()
+		h64 := murmur3.New64()
 		h64.Write(buf.Bytes())
-		return h64.Sum64(), nil
+		return int64(h64.Sum64()), nil
 
 	case bool:
 		typedValInt64 := 0
@@ -194,23 +254,33 @@ func callToken(args []any) (any, error) {
 		}
 		b := make([]byte, 8)
 		binary.LittleEndian.PutUint64(b, uint64(typedValInt64))
-		var h64 hash.Hash64 = murmur3.New64()
+		h64 := murmur3.New64()
 		h64.Write(b)
-		return h64.Sum64(), nil
+		return int64(h64.Sum64()), nil
+
+	// case inf.Dec:
+	// 	b, err := typedVal.GobEncode()
+	// 	if err != nil {
+	// 		return nil, fmt.Errorf("cannot token decimal %v: %s", typedVal, err.Error())
+	// 	}
+	// 	var h64 hash.Hash64 = murmur3.New64()
+	// 	h64.Write(b)
+	// 	return h64.Sum64(), nil
 
 	case decimal.Decimal:
 		b, err := typedVal.MarshalBinary()
 		if err != nil {
 			return nil, fmt.Errorf("cannot token decimal %v: %s", typedVal, err.Error())
 		}
-		var h64 hash.Hash64 = murmur3.New64()
+		h64 := murmur3.New64()
 		h64.Write(b)
-		return h64.Sum64(), nil
+		return int64(h64.Sum64()), nil
 
 	case string:
-		var h64 hash.Hash64 = murmur3.New64()
+		h64 := murmur3.New64()
 		h64.Write([]byte(typedVal))
-		return h64.Sum64(), nil
+		return int64(h64.Sum64()), nil
+
 	default:
 		return nil, fmt.Errorf("cannot token %v, unsupported source type %T", args[0], args[0])
 	}
@@ -246,17 +316,15 @@ func callCurrentTime(args []any) (any, error) {
 func intAbs(src int64) int64 {
 	if src < 0 {
 		return -src
-	} else {
-		return src
 	}
+	return src
 }
 
 func floatAbs(src float64) float64 {
 	if src < 0 {
 		return -src
-	} else {
-		return src
 	}
+	return src
 }
 
 func callAbs(args []any) (any, error) {
@@ -278,9 +346,10 @@ func callAbs(args []any) (any, error) {
 		return floatAbs(float64(typedVal)), nil
 	case float64:
 		return floatAbs(typedVal), nil
+	// case inf.Dec:
+	// 	return *typedVal.Abs(&typedVal), nil
 	case decimal.Decimal:
-		typedValFloat64, _ := typedVal.Float64()
-		return decimal.NewFromFloat(floatAbs(typedValFloat64)), nil
+		return typedVal.Abs(), nil
 	default:
 		return nil, fmt.Errorf("cannot abs %v, unsupported source type", args[0])
 	}
@@ -305,9 +374,18 @@ func callExp(args []any) (any, error) {
 		return math.Exp(float64(typedVal)), nil
 	case float64:
 		return math.Exp(typedVal), nil
+	// case inf.Dec:
+	// 	decVal, err := float64ToDec(math.Exp(decToFloat64(&typedVal)))
+	// 	if err != nil {
+	// 		return nil, fmt.Errorf("cannot calculate exp for decimal %v: %s", typedVal, err.Error())
+	// 	}
+	// 	return *decVal, nil
 	case decimal.Decimal:
-		typedValFloat64, _ := typedVal.Float64()
-		return decimal.NewFromFloat(math.Exp(typedValFloat64)), nil
+		expVal, err := typedVal.ExpTaylor(17)
+		if err != nil {
+			return nil, fmt.Errorf("cannot calculate exp for decimal %v: %s", typedVal, err.Error())
+		}
+		return expVal, nil
 	default:
 		return nil, fmt.Errorf("cannot exp %v, unsupported source type", args[0])
 	}
@@ -332,9 +410,18 @@ func callLog(args []any) (any, error) {
 		return math.Log(float64(typedVal)), nil
 	case float64:
 		return math.Log(typedVal), nil
+	// case inf.Dec:
+	// 	decVal, err := float64ToDec(math.Log(decToFloat64(&typedVal)))
+	// 	if err != nil {
+	// 		return nil, fmt.Errorf("cannot calculate log for decimal %v: %s", typedVal, err.Error())
+	// 	}
+	// 	return *decVal, nil
 	case decimal.Decimal:
-		typedValFloat64, _ := typedVal.Float64()
-		return decimal.NewFromFloat(math.Log(typedValFloat64)), nil
+		logVal, err := typedVal.Ln(10)
+		if err != nil {
+			return nil, fmt.Errorf("cannot calculate log for decimal %v: %s", typedVal, err.Error())
+		}
+		return logVal, nil
 	default:
 		return nil, fmt.Errorf("cannot log %v, unsupported source type", args[0])
 	}
@@ -359,9 +446,15 @@ func callLog10(args []any) (any, error) {
 		return math.Log10(float64(typedVal)), nil
 	case float64:
 		return math.Log10(typedVal), nil
+	// case inf.Dec:
+	// 	decVal, err := float64ToDec(math.Log10(decToFloat64(&typedVal)))
+	// 	if err != nil {
+	// 		return nil, fmt.Errorf("cannot calculate log10 for decimal %v: %s", typedVal, err.Error())
+	// 	}
+	// 	return *decVal, nil
 	case decimal.Decimal:
-		typedValFloat64, _ := typedVal.Float64()
-		return decimal.NewFromFloat(math.Log10(typedValFloat64)), nil
+		f, _ := typedVal.Float64()
+		return decimal.NewFromFloat(math.Log10(f)), nil
 	default:
 		return nil, fmt.Errorf("cannot log10 %v, unsupported source type", args[0])
 	}
@@ -386,10 +479,34 @@ func callRound(args []any) (any, error) {
 		return math.Round(float64(typedVal)), nil
 	case float64:
 		return math.Round(typedVal), nil
+	// case inf.Dec:
+	// 	return *typedVal.Round(&typedVal, 0, inf.RoundHalfUp), nil
 	case decimal.Decimal:
-		typedValFloat64, _ := typedVal.Float64()
-		return decimal.NewFromFloat(math.Round(typedValFloat64)), nil
+		return typedVal.Round(0), nil
 	default:
 		return nil, fmt.Errorf("cannot round %v, unsupported source type", args[0])
+	}
+}
+
+func callNow(args []any) (any, error) {
+	if err := eval.CheckArgs("now", 0, len(args)); err != nil {
+		return nil, err
+	}
+	return gocql.TimeUUID(), nil
+}
+
+func callToTimestamp(args []any) (any, error) {
+	if err := eval.CheckArgs("toTimestamp", 1, len(args)); err != nil {
+		return nil, err
+	}
+
+	switch typedArg := args[0].(type) {
+	case gocql.UUID:
+		return typedArg.Time(), nil
+	case int64:
+		// Assuming this is a date - number of days since epoch
+		return time.Unix(typedArg*86400, 0).UTC(), nil
+	default:
+		return nil, fmt.Errorf("totimestamp does not support %T(%v)", typedArg, typedArg)
 	}
 }

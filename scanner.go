@@ -6,7 +6,7 @@ import (
 
 type iterScanner struct {
 	Iter    *gocqlmemIter
-	Cols    []interface{}
+	Cols    []any
 	IsValid bool
 }
 
@@ -21,14 +21,18 @@ func (is *iterScanner) Next() bool {
 	return true
 }
 
-func (is *iterScanner) Scan(dest ...interface{}) error {
+func (is *iterScanner) Scan(dest ...any) error {
 	if len(dest) < len(is.Cols) {
 		return fmt.Errorf("cannot scan %d columns to dest of length %d", len(is.Cols), len(dest))
 	}
 
 	for i := range len(is.Cols) {
-		if err := internalValueToProvidedPtr(is.Cols[i], dest[i]); err != nil {
-			return fmt.Errorf("cannot scan column %d: %s", i, err.Error())
+		if is.Cols[i] == nil {
+			dest[i] = nil
+		} else {
+			if err := clientTypedValueToProvidedPtr(is.Cols[i], dest[i]); err != nil {
+				return fmt.Errorf("cannot scan column %d: %s", i, err.Error())
+			}
 		}
 	}
 	return nil

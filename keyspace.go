@@ -8,15 +8,17 @@ import (
 )
 
 type Keyspace struct {
-	TableMap        map[string]*tableStore
-	WithReplication []*KeyValuePair
-	Lock            sync.RWMutex
+	TableMap         map[string]*tableStore
+	WithReplication  []*KeyValuePair
+	Lock             sync.RWMutex
+	TableMetadataMap map[string]*gocql.TableMetadata
 }
 
 func newKeyspace() *Keyspace {
 	return &Keyspace{
-		TableMap:        map[string]*tableStore{},
-		WithReplication: make([]*KeyValuePair, 0),
+		TableMap:         map[string]*tableStore{},
+		WithReplication:  make([]*KeyValuePair, 0),
+		TableMetadataMap: map[string]*gocql.TableMetadata{},
 	}
 }
 
@@ -24,6 +26,7 @@ func (ks *Keyspace) createTable(cmd *CommandCreateTable) error {
 	ks.Lock.Lock()
 	defer ks.Lock.Unlock()
 
+	// Table store
 	_, alreadyExists := ks.TableMap[cmd.TableName]
 	if alreadyExists && cmd.IfNotExists {
 		return nil
@@ -36,6 +39,13 @@ func (ks *Keyspace) createTable(cmd *CommandCreateTable) error {
 		return fmt.Errorf("cannot create table %s: %s", cmd.TableName, err.Error())
 	}
 	ks.TableMap[cmd.TableName] = newTable
+
+	// Table metadata
+	ks.TableMetadataMap[cmd.TableName] = &gocql.TableMetadata{
+		Keyspace: cmd.GetCtxKeyspace(),
+		Name:     cmd.TableName,
+	}
+
 	return nil
 }
 
@@ -48,7 +58,7 @@ func (ks *Keyspace) truncateTable(cmd *CommandTruncateTable) error {
 		return fmt.Errorf("cannot truncate table %s, it was not found", cmd.TableName)
 	}
 
-	return t.execTruncate(cmd)
+	return t.execTruncate()
 }
 
 func (ks *Keyspace) dropTable(cmd *CommandDropTable) error {
@@ -81,7 +91,7 @@ func (ks *Keyspace) execInsert(cmd *CommandInsert) (bool, []gocql.ColumnInfo, []
 	return t.execInsert(cmd)
 }
 
-func (ks *Keyspace) execSelect(cmd *CommandSelect, lastSelectedRowIdx int, maxRows int) ([]string, [][]any, []gocql.TypeInfo, int, error) {
+func (ks *Keyspace) execSelect(cmd *CommandSelect, lastSelectedRowIdx int, maxRows int, preparedQueryParams []any) ([]string, [][]any, []gocql.TypeInfo, int, error) {
 	ks.Lock.RLock()
 	defer ks.Lock.RUnlock()
 
@@ -89,10 +99,10 @@ func (ks *Keyspace) execSelect(cmd *CommandSelect, lastSelectedRowIdx int, maxRo
 	if !alreadyExists {
 		return []string{}, [][]any{}, []gocql.TypeInfo{}, -1, fmt.Errorf("cannot select from  table %s, it was not found in the keyspace %s", cmd.TableName, cmd.GetCtxKeyspace())
 	}
-	return t.execSelect(cmd, lastSelectedRowIdx, maxRows)
+	return t.execSelect(cmd, lastSelectedRowIdx, maxRows, preparedQueryParams)
 }
 
-func (ks *Keyspace) execUpdate(cmd *CommandUpdate) (bool, []gocql.ColumnInfo, [][]any, error) {
+func (ks *Keyspace) execUpdate(cmd *CommandUpdate, preparedQueryParams []any) (bool, []gocql.ColumnInfo, [][]any, error) {
 	ks.Lock.RLock()
 	defer ks.Lock.RUnlock()
 
@@ -100,10 +110,10 @@ func (ks *Keyspace) execUpdate(cmd *CommandUpdate) (bool, []gocql.ColumnInfo, []
 	if !alreadyExists {
 		return false, nil, nil, fmt.Errorf("cannot update table %s, it was not found in the keyspace %s", cmd.TableName, cmd.GetCtxKeyspace())
 	}
-	return t.execUpdate(cmd)
+	return t.execUpdate(cmd, preparedQueryParams)
 }
 
-func (ks *Keyspace) execDelete(cmd *CommandDelete) (bool, error) {
+func (ks *Keyspace) execDelete(cmd *CommandDelete, preparedQueryParams []any) (bool, error) {
 	ks.Lock.RLock()
 	defer ks.Lock.RUnlock()
 
@@ -112,5 +122,5 @@ func (ks *Keyspace) execDelete(cmd *CommandDelete) (bool, error) {
 		return false, fmt.Errorf("cannot delete from table %s, it was not found in the keyspace %s", cmd.TableName, cmd.GetCtxKeyspace())
 	}
 
-	return t.execDelete(cmd)
+	return t.execDelete(cmd, preparedQueryParams)
 }

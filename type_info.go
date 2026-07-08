@@ -1,8 +1,10 @@
 package gocqlmem
 
 import (
+	"time"
+
 	gocql "github.com/apache/cassandra-gocql-driver/v2"
-	"github.com/shopspring/decimal"
+	"gopkg.in/inf.v0"
 )
 
 type CqlDataType string
@@ -46,32 +48,55 @@ func (t *scalarType) Type() gocql.Type {
 	return t.typ
 }
 
-func (t *scalarType) Zero() interface{} {
+func (t *scalarType) Zero() any {
 	switch t.typ {
-	case gocql.TypeInt, gocql.TypeBigInt, gocql.TypeSmallInt, gocql.TypeTinyInt:
-		return int64(0)
+	case gocql.TypeInt, gocql.TypeDate:
+		v := int32(0)
+		return &v
+	case gocql.TypeBigInt, gocql.TypeCounter, gocql.TypeTime:
+		v := int64(0)
+		return &v
+	case gocql.TypeSmallInt:
+		v := int16(0)
+		return &v
+	case gocql.TypeTinyInt:
+		v := int8(0)
+		return &v
 	case gocql.TypeFloat:
-		return float64(0)
+		v := float32(0)
+		return &v
+	case gocql.TypeDouble:
+		v := float64(0)
+		return &v
 	case gocql.TypeText, gocql.TypeVarchar, gocql.TypeAscii:
-		return ""
+		v := ""
+		return &v
 	case gocql.TypeBoolean:
-		return false
+		v := false
+		return &v
 	case gocql.TypeDecimal:
-		return decimal.NewFromFloat(0.0)
+		return inf.NewDec(0, 0)
+	case gocql.TypeUUID, gocql.TypeTimeUUID:
+		v := gocql.UUID{}
+		return &v
 	case gocql.TypeBlob:
-		return []byte(nil)
+		v := []byte{}
+		return &v
+	case gocql.TypeTimestamp:
+		v := time.Date(1, 1, 1, 0, 0, 0, 0, time.UTC)
+		return &v
 	default:
 		// TODO: raise an alarm
 		return nil
 	}
 }
 
-func (t *scalarType) Marshal(value interface{}) ([]byte, error) {
+func (t *scalarType) Marshal(_ any) ([]byte, error) {
 	// Not implemented, do we need it in our project?
 	return nil, nil
 }
 
-func (t *scalarType) Unmarshal(data []byte, value interface{}) error {
+func (t *scalarType) Unmarshal(_ []byte, _ any) error {
 	// Not implemented, do we need it in our project?
 	return nil
 }

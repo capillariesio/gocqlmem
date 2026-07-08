@@ -255,12 +255,12 @@ func TestFunc(t *testing.T) {
 
 	exp, err := parser.ParseExpr("package1.Mul2(1.0)")
 	assert.Nil(t, err)
-	result, err := eCtx.Eval(exp)
+	result, _ := eCtx.Eval(exp)
 	assert.Equal(t, float64(2.0), result)
 
 	exp, err = parser.ParseExpr("mul3(1.0)")
 	assert.Nil(t, err)
-	result, err = eCtx.Eval(exp)
+	result, _ = eCtx.Eval(exp)
 	assert.Equal(t, float64(3.0), result)
 }
 
@@ -273,12 +273,12 @@ func TestConst(t *testing.T) {
 
 	exp, err := parser.ParseExpr("const1*2")
 	assert.Nil(t, err)
-	result, err := eCtx.Eval(exp)
+	result, _ := eCtx.Eval(exp)
 	assert.Equal(t, float64(2.0), result)
 
 	exp, err = parser.ParseExpr("package2.const2*2")
 	assert.Nil(t, err)
-	result, err = eCtx.Eval(exp)
+	result, _ = eCtx.Eval(exp)
 	assert.Equal(t, float64(4.0), result)
 }
 
@@ -320,11 +320,12 @@ const (
 	BinaryBoolToBoolFunc
 	BinaryStringFunc
 	BinaryStringToBoolFunc
+	BinaryByteSliceToByteSliceFunc
 )
 
 func assertBinaryEval(t *testing.T, evalFunc EvalFunc, valLeftVolatile any, op token.Token, valRightVolatile any, errorMessage string) {
 	var err error
-	eCtx := newPlainEvalCtx(AggFuncDisabled)
+	eCtx := newPlainEvalCtxInternal(AggFuncDisabled)
 	switch evalFunc {
 	case BinaryIntFunc:
 		_, err = eCtx.EvalBinaryInt(valLeftVolatile, op, valRightVolatile)
@@ -348,6 +349,8 @@ func assertBinaryEval(t *testing.T, evalFunc EvalFunc, valLeftVolatile any, op t
 		_, err = eCtx.EvalBinaryString(valLeftVolatile, op, valRightVolatile)
 	case BinaryStringToBoolFunc:
 		_, err = eCtx.EvalBinaryStringToBool(valLeftVolatile, op, valRightVolatile)
+	case BinaryByteSliceToByteSliceFunc:
+		_, err = eCtx.EvalBinaryByteSliceToByteSlice(valLeftVolatile, op, valRightVolatile)
 	default:
 		assert.Fail(t, "unsupported EvalFunc")
 	}
@@ -442,6 +445,37 @@ func TestBadEvalBinaryStringToBool(t *testing.T) {
 	assertBinaryEval(t, BinaryStringToBoolFunc, goodVal, token.AND, goodVal, "cannot perform bool op & against string good and string good")
 }
 
+func TestEvalBinaryByteSliceToByteSlice(t *testing.T) {
+	goodVal := []byte{1, 2}
+	anotherGoodVal := []byte{2, 3}
+	eCtx := newPlainEvalCtxInternal(AggFuncDisabled)
+
+	res, err := eCtx.EvalBinaryByteSliceToByteSlice(goodVal, token.LSS, anotherGoodVal)
+	assert.Nil(t, err)
+	assert.True(t, res)
+
+	res, err = eCtx.EvalBinaryByteSliceToByteSlice(goodVal, token.GTR, anotherGoodVal)
+	assert.Nil(t, err)
+	assert.False(t, res)
+
+	badVal := 1
+	assertBinaryEval(t, BinaryByteSliceToByteSliceFunc, badVal, token.LSS, goodVal, "cannot evaluate binary []byte expression < with int on the left")
+	assertBinaryEval(t, BinaryByteSliceToByteSliceFunc, goodVal, token.GTR, badVal, "cannot evaluate binary []byte expression '[1 2]([]uint8) > 1(int)', invalid right arg")
+	assertBinaryEval(t, BinaryByteSliceToByteSliceFunc, goodVal, token.AND, goodVal, "cannot perform compare op & against []byte [1 2] and []byte [1 2]")
+
+	// Exercise EvalBinaryCompareExp with []byte
+	constants := map[string]any{
+		"goodVal":        goodVal,
+		"anotherGoodVal": anotherGoodVal,
+	}
+	eCtx = NewPlainEvalCtx(nil, constants, nil)
+	exp, err := parser.ParseExpr("goodVal < anotherGoodVal")
+	assert.Nil(t, err)
+	val, err := eCtx.Eval(exp)
+	assert.Nil(t, err)
+	assert.True(t, val.(bool))
+}
+
 func TestUnsupported(t *testing.T) {
 	varValuesMap := VarValuesMap{
 		"t1": {
@@ -466,7 +500,23 @@ func TestGetSafeValue(t *testing.T) {
 	eCtx = NewPlainEvalCtx(nil, constants, nil)
 	exp, err := parser.ParseExpr("const1*2")
 	assert.Nil(t, err)
-	eCtx.Eval(exp)
-	assert.Equal(t, float64(2.0), eCtx.GetValue())
+	val, err := eCtx.Eval(exp)
+	assert.Nil(t, err)
+	assert.Equal(t, float64(2.0), val)
 	assert.Equal(t, float64(2.0), eCtx.GetSafeValue(int64(35)))
+}
+
+func TestOutOfRangeInt(t *testing.T) {
+	constants := map[string]any{
+		"const1": float64(1.0),
+	}
+	eCtx := NewPlainEvalCtx(nil, constants, nil)
+	exp, err := parser.ParseExpr("100000000000000000000")
+	assert.Nil(t, err)
+	val, err := eCtx.Eval(exp)
+	assert.Nil(t, err)
+
+	expected, err := decimal.NewFromString("100000000000000000000")
+	assert.Nil(t, err)
+	assert.Equal(t, expected, val)
 }
