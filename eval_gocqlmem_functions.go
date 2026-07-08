@@ -59,10 +59,19 @@ func callCast(args []any) (any, error) {
 	}
 
 	switch typedVal := args[0].(type) {
-	case int64, int32, int16, int8:
-		typedValInt64, err := eval.CastToInt64(typedVal)
-		if err != nil {
-			return nil, fmt.Errorf("cannot cast %v to %v int: %s", typedVal, dataType, err.Error())
+	case int, int64, int32, int16, int8:
+		var typedValInt64 int64
+		switch typedVal := typedVal.(type) {
+		case int:
+			typedValInt64 = int64(typedVal)
+		case int8:
+			typedValInt64 = int64(typedVal)
+		case int16:
+			typedValInt64 = int64(typedVal)
+		case int32:
+			typedValInt64 = int64(typedVal)
+		case int64:
+			typedValInt64 = typedVal
 		}
 		switch dataType {
 		case DataTypeBigint, DataTypeSmallint, DataTypeTinyint, DataTypeInt, DataTypeVarint:
@@ -77,9 +86,12 @@ func callCast(args []any) (any, error) {
 			return nil, fmt.Errorf("cannot cast int %v to %v", typedVal, dataType)
 		}
 	case float32, float64:
-		typedValFloat64, err := eval.CastToFloat64(typedVal)
-		if err != nil {
-			return nil, fmt.Errorf("cannot cast float %v to %v: %s", typedVal, dataType, err.Error())
+		var typedValFloat64 float64
+		switch typedVal := typedVal.(type) {
+		case float32:
+			typedValFloat64 = float64(typedVal)
+		case float64:
+			typedValFloat64 = typedVal
 		}
 		switch dataType {
 		case DataTypeBigint, DataTypeSmallint, DataTypeTinyint, DataTypeInt, DataTypeVarint:
@@ -139,30 +151,38 @@ func callToken(args []any) (any, error) {
 	}
 	switch typedVal := args[0].(type) {
 	case int, int64, int32, int16, int8:
-		typedValInt64, err := eval.CastToInt64(typedVal)
-		if err != nil {
-			return nil, fmt.Errorf("cannot token int %v: %s", typedVal, err.Error())
+		var typedValInt64 int64
+		switch typedVal := typedVal.(type) {
+		case int:
+			typedValInt64 = int64(typedVal)
+		case int8:
+			typedValInt64 = int64(typedVal)
+		case int16:
+			typedValInt64 = int64(typedVal)
+		case int32:
+			typedValInt64 = int64(typedVal)
+		case int64:
+			typedValInt64 = typedVal
 		}
-
 		b := make([]byte, 8)
 		binary.LittleEndian.PutUint64(b, uint64(typedValInt64))
-
 		var h64 hash.Hash64 = murmur3.New64()
 		h64.Write(b)
 		return h64.Sum64(), nil
 
 	case float32, float64:
-		typedValFloat64, err := eval.CastToFloat64(typedVal)
-		if err != nil {
-			return nil, fmt.Errorf("cannot token float %v: %s", typedVal, err.Error())
+		var typedValFloat64 float64
+		switch typedVal := typedVal.(type) {
+		case float32:
+			typedValFloat64 = float64(typedVal)
+		case float64:
+			typedValFloat64 = typedVal
 		}
-
 		var buf bytes.Buffer
-		err = binary.Write(&buf, binary.LittleEndian, typedValFloat64)
+		err := binary.Write(&buf, binary.LittleEndian, typedValFloat64)
 		if err != nil {
 			return nil, fmt.Errorf("cannot token float %v, binary fails: %s", typedVal, err.Error())
 		}
-
 		var h64 hash.Hash64 = murmur3.New64()
 		h64.Write(buf.Bytes())
 		return h64.Sum64(), nil
@@ -174,7 +194,6 @@ func callToken(args []any) (any, error) {
 		}
 		b := make([]byte, 8)
 		binary.LittleEndian.PutUint64(b, uint64(typedValInt64))
-
 		var h64 hash.Hash64 = murmur3.New64()
 		h64.Write(b)
 		return h64.Sum64(), nil
@@ -224,44 +243,44 @@ func callCurrentTime(args []any) (any, error) {
 	return int64(((ti.Hour()*60+ti.Minute())*60+ti.Second())*1000000000 + ti.Nanosecond()), nil // Cassandra: nanos from midnight
 }
 
+func intAbs(src int64) int64 {
+	if src < 0 {
+		return -src
+	} else {
+		return src
+	}
+}
+
+func floatAbs(src float64) float64 {
+	if src < 0 {
+		return -src
+	} else {
+		return src
+	}
+}
+
 func callAbs(args []any) (any, error) {
 	if err := eval.CheckArgs("abs", 1, len(args)); err != nil {
 		return nil, err
 	}
-
 	switch typedVal := args[0].(type) {
-	case int, int64, int32, int16, int8:
-		typedValInt64, err := eval.CastToInt64(typedVal)
-		if err != nil {
-			return nil, fmt.Errorf("cannot abs int %v: %s", typedVal, err.Error())
-		}
-
-		if typedValInt64 < 0 {
-			typedValInt64 = -typedValInt64
-		}
-		return typedValInt64, nil
-
-	case float32, float64:
-		typedValInt64, err := eval.CastToFloat64(typedVal)
-		if err != nil {
-			return nil, fmt.Errorf("cannot abs float %v: %s", typedVal, err.Error())
-		}
-
-		if typedValInt64 < 0 {
-			typedValInt64 = -typedValInt64
-		}
-		return typedValInt64, nil
-
+	case int:
+		return intAbs(int64(typedVal)), nil
+	case int8:
+		return intAbs(int64(typedVal)), nil
+	case int16:
+		return intAbs(int64(typedVal)), nil
+	case int32:
+		return intAbs(int64(typedVal)), nil
+	case int64:
+		return intAbs(typedVal), nil
+	case float32:
+		return floatAbs(float64(typedVal)), nil
+	case float64:
+		return floatAbs(typedVal), nil
 	case decimal.Decimal:
-		typedValFloat64, err := eval.CastToFloat64(typedVal)
-		if err != nil {
-			return nil, fmt.Errorf("cannot abs decimal %v: %s", typedVal, err.Error())
-		}
-
-		if typedValFloat64 < 0 {
-			typedValFloat64 = -typedValFloat64
-		}
-		return decimal.NewFromFloat(typedValFloat64), nil
+		typedValFloat64, _ := typedVal.Float64()
+		return decimal.NewFromFloat(floatAbs(typedValFloat64)), nil
 	default:
 		return nil, fmt.Errorf("cannot abs %v, unsupported source type", args[0])
 	}
@@ -271,30 +290,24 @@ func callExp(args []any) (any, error) {
 	if err := eval.CheckArgs("exp", 1, len(args)); err != nil {
 		return nil, err
 	}
-
 	switch typedVal := args[0].(type) {
-	case int, int64, int32, int16, int8:
-		typedValInt64, err := eval.CastToInt64(typedVal)
-		if err != nil {
-			return nil, fmt.Errorf("cannot exp int %v: %s", typedVal, err.Error())
-		}
-		return math.Exp(float64(typedValInt64)), nil
-
-	case float32, float64:
-		typedValFloat64, err := eval.CastToFloat64(typedVal)
-		if err != nil {
-			return nil, fmt.Errorf("cannot exp float %v: %s", typedVal, err.Error())
-		}
-		return math.Exp(typedValFloat64), nil
-
+	case int:
+		return math.Exp(float64(typedVal)), nil
+	case int8:
+		return math.Exp(float64(typedVal)), nil
+	case int16:
+		return math.Exp(float64(typedVal)), nil
+	case int32:
+		return math.Exp(float64(typedVal)), nil
+	case int64:
+		return math.Exp(float64(typedVal)), nil
+	case float32:
+		return math.Exp(float64(typedVal)), nil
+	case float64:
+		return math.Exp(typedVal), nil
 	case decimal.Decimal:
-		typedValFloat64, err := eval.CastToFloat64(typedVal)
-		if err != nil {
-			return nil, fmt.Errorf("cannot exp decimal %v: %s", typedVal, err.Error())
-		}
-		typedValFloat64 = math.Exp(typedValFloat64)
-		return decimal.NewFromFloat(typedValFloat64), nil
-
+		typedValFloat64, _ := typedVal.Float64()
+		return decimal.NewFromFloat(math.Exp(typedValFloat64)), nil
 	default:
 		return nil, fmt.Errorf("cannot exp %v, unsupported source type", args[0])
 	}
@@ -304,30 +317,24 @@ func callLog(args []any) (any, error) {
 	if err := eval.CheckArgs("log", 1, len(args)); err != nil {
 		return nil, err
 	}
-
 	switch typedVal := args[0].(type) {
-	case int, int64, int32, int16, int8:
-		typedValInt64, err := eval.CastToInt64(typedVal)
-		if err != nil {
-			return nil, fmt.Errorf("cannot log int %v: %s", typedVal, err.Error())
-		}
-		return math.Log(float64(typedValInt64)), nil
-
-	case float32, float64:
-		typedValFloat64, err := eval.CastToFloat64(typedVal)
-		if err != nil {
-			return nil, fmt.Errorf("cannot log float %v: %s", typedVal, err.Error())
-		}
-		return math.Log(typedValFloat64), nil
-
+	case int:
+		return math.Log(float64(typedVal)), nil
+	case int8:
+		return math.Log(float64(typedVal)), nil
+	case int16:
+		return math.Log(float64(typedVal)), nil
+	case int32:
+		return math.Log(float64(typedVal)), nil
+	case int64:
+		return math.Log(float64(typedVal)), nil
+	case float32:
+		return math.Log(float64(typedVal)), nil
+	case float64:
+		return math.Log(typedVal), nil
 	case decimal.Decimal:
-		typedValFloat64, err := eval.CastToFloat64(typedVal)
-		if err != nil {
-			return nil, fmt.Errorf("cannot log decimal %v: %s", typedVal, err.Error())
-		}
-		typedValFloat64 = math.Log(typedValFloat64)
-		return decimal.NewFromFloat(typedValFloat64), nil
-
+		typedValFloat64, _ := typedVal.Float64()
+		return decimal.NewFromFloat(math.Log(typedValFloat64)), nil
 	default:
 		return nil, fmt.Errorf("cannot log %v, unsupported source type", args[0])
 	}
@@ -337,30 +344,24 @@ func callLog10(args []any) (any, error) {
 	if err := eval.CheckArgs("log10", 1, len(args)); err != nil {
 		return nil, err
 	}
-
 	switch typedVal := args[0].(type) {
-	case int, int64, int32, int16, int8:
-		typedValInt64, err := eval.CastToInt64(typedVal)
-		if err != nil {
-			return nil, fmt.Errorf("cannot log10 int %v: %s", typedVal, err.Error())
-		}
-		return math.Log10(float64(typedValInt64)), nil
-
-	case float32, float64:
-		typedValFloat64, err := eval.CastToFloat64(typedVal)
-		if err != nil {
-			return nil, fmt.Errorf("cannot log10 float %v: %s", typedVal, err.Error())
-		}
-		return math.Log10(typedValFloat64), nil
-
+	case int:
+		return math.Log10(float64(typedVal)), nil
+	case int8:
+		return math.Log10(float64(typedVal)), nil
+	case int16:
+		return math.Log10(float64(typedVal)), nil
+	case int32:
+		return math.Log10(float64(typedVal)), nil
+	case int64:
+		return math.Log10(float64(typedVal)), nil
+	case float32:
+		return math.Log10(float64(typedVal)), nil
+	case float64:
+		return math.Log10(typedVal), nil
 	case decimal.Decimal:
-		typedValFloat64, err := eval.CastToFloat64(typedVal)
-		if err != nil {
-			return nil, fmt.Errorf("cannot log10 decimal %v: %s", typedVal, err.Error())
-		}
-		typedValFloat64 = math.Log10(typedValFloat64)
-		return decimal.NewFromFloat(typedValFloat64), nil
-
+		typedValFloat64, _ := typedVal.Float64()
+		return decimal.NewFromFloat(math.Log10(typedValFloat64)), nil
 	default:
 		return nil, fmt.Errorf("cannot log10 %v, unsupported source type", args[0])
 	}
@@ -370,30 +371,24 @@ func callRound(args []any) (any, error) {
 	if err := eval.CheckArgs("round", 1, len(args)); err != nil {
 		return nil, err
 	}
-
 	switch typedVal := args[0].(type) {
-	case int, int64, int32, int16, int8:
-		typedValInt64, err := eval.CastToInt64(typedVal)
-		if err != nil {
-			return nil, fmt.Errorf("cannot round int %v: %s", typedVal, err.Error())
-		}
-		return typedValInt64, nil
-
-	case float32, float64:
-		typedValFloat64, err := eval.CastToFloat64(typedVal)
-		if err != nil {
-			return nil, fmt.Errorf("cannot round float %v: %s", typedVal, err.Error())
-		}
-		return math.Round(typedValFloat64), nil
-
+	case int:
+		return int64(typedVal), nil
+	case int8:
+		return int64(typedVal), nil
+	case int16:
+		return int64(typedVal), nil
+	case int32:
+		return int64(typedVal), nil
+	case int64:
+		return typedVal, nil
+	case float32:
+		return math.Round(float64(typedVal)), nil
+	case float64:
+		return math.Round(typedVal), nil
 	case decimal.Decimal:
-		typedValFloat64, err := eval.CastToFloat64(typedVal)
-		if err != nil {
-			return nil, fmt.Errorf("cannot round decimal %v: %s", typedVal, err.Error())
-		}
-		typedValFloat64 = math.Round(typedValFloat64)
-		return decimal.NewFromFloat(typedValFloat64), nil
-
+		typedValFloat64, _ := typedVal.Float64()
+		return decimal.NewFromFloat(math.Round(typedValFloat64)), nil
 	default:
 		return nil, fmt.Errorf("cannot round %v, unsupported source type", args[0])
 	}
