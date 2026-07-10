@@ -28,7 +28,7 @@ jobs:
       uses: golangci/golangci-lint-action@v9
       with:
         version: v2.12.2
-        args: --verbose --timeout 10m --fix=false --config=.golangci.yml ./pkg/...
+        args: --verbose --timeout 10m --fix=false --config=.golangci.yml ./...
 
     - name: Generate coverage report for coveralls.io
       run: |
