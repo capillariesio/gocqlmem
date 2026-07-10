@@ -1,0 +1,93 @@
+# https://golangci-lint.run/usage/configuration/#config-file
+# ~/go/bin/golangci-lint run ./...
+# gofmt -s -w ./
+
+version: "2"
+formatters:
+  enable:
+    - goimports
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - staticcheck
+    - revive
+    - govet
+    - forbidigo
+  settings:  
+    revive:
+      severity: error
+      confidence: 0.8
+      enable-all-rules: true
+      rules:
+        # Disabled rules
+        - name: confusing-results
+          disabled: true
+        - name: add-constant
+          disabled: true
+        - name: argument-limit
+          disabled: true
+        - name: empty-lines
+          disabled: true
+        - name: exported
+          disabled: true
+        - name: function-length
+          disabled: true
+        - name: line-length-limit
+          disabled: true
+        - name: max-public-structs
+          disabled: true
+        - name: unused-receiver
+          disabled: true
+        - name: var-naming
+          disabled: true
+        - name: flag-parameter
+          disabled: true
+
+        # Rule tuning
+        - name: max-control-nesting
+          arguments:
+            - 8
+        - name: cognitive-complexity
+          arguments:
+            - 50
+        - name: cyclomatic
+          arguments:
+            - 30
+        - name: function-result-limit
+          arguments:
+            - 6
+        - name: unhandled-error
+          arguments:
+            - "fmt.*"
+            - "bytes.Buffer.*"
+            - "strings.Builder.*"
+            - "os.File.Close"
+            - "io.Closer.Close"
+            - "zap.Logger.Sync"
+            - "net.Conn.Close"
+
+  exclusions:
+    warn-unused: true
+    presets:
+      - std-error-handling
+      - common-false-positives
+    rules:
+      - path: eval\/eval_ctx\.go
+        text: function \(\*EvalCtx\)\.Eval has (cognitive|cyclomatic) complexity
+        linters: [ revive ]
+      - path: eval_gocqlmem_functions\.go
+        text: function callCast has (cognitive|cyclomatic) complexity
+        linters: [ revive ]
+      - path: parser\.go
+        text: function (ParseCommands|parseCommands|parseSelect|parseCreateTable) has (cognitive|cyclomatic) complexity
+        linters: [ revive ]
+      - path: table\.go
+        text: function \(\*tableStore\)\.(execUpdate|execSelect|buildKey) has (cognitive|cyclomatic) complexity
+        linters: [ revive ]
+      - path: type_helpers\.go
+        text: function (compareInternalInExpressions|clientTypedValueToProvidedPtr|compareInternalKnownType) has cyclomatic complexity
+        linters: [ revive ]
+
+        
