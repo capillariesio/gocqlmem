@@ -1,6 +1,4 @@
-# gocqlmem
-
-<div style="float:right;"> [![coveralls](https://coveralls.io/repos/github/capillariesio/gocqlmem/badge.svg?branch=main)](https://coveralls.io/github/capillariesio/gocqlmem?branch=main) [![Go Reference](https://pkg.go.dev/badge/github.com/capillariesio/gocqlmem.svg)](https://pkg.go.dev/github.com/capillariesio/gocqlmem)</div>
+# gocqlmem <div style="float:right;"> [![coveralls](https://coveralls.io/repos/github/capillariesio/gocqlmem/badge.svg?branch=main)](https://coveralls.io/github/capillariesio/gocqlmem?branch=main) [![Go Reference](https://pkg.go.dev/badge/github.com/capillariesio/gocqlmem.svg)](https://pkg.go.dev/github.com/capillariesio/gocqlmem)</div>
 
 This package implements in-memory gocql. Can be useful for unit testing. Uses eval package for agg calculations. A spin-off from <a href="https://github.com/capillariesio/capillaries">Capillaries</a>.
 
