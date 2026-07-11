@@ -6,6 +6,8 @@ import (
 	gocql "github.com/apache/cassandra-gocql-driver/v2"
 )
 
+// I wish these interfaces were defined in gocql
+
 type Iter interface {
 	Host() *gocql.HostInfo
 	Columns() []gocql.ColumnInfo
