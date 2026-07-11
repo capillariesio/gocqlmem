@@ -1,4 +1,4 @@
-# gocqlmem <div style="float:right;"> [![coveralls](https://coveralls.io/repos/github/capillariesio/gocqlmem/badge.svg?branch=main)](https://coveralls.io/github/capillariesio/gocqlmem?branch=main) [![Go Reference](https://pkg.go.dev/badge/github.com/capillariesio/gocqlmem.svg)](https://pkg.go.dev/github.com/capillariesio/gocqlmem)</div>
+# <img src="gocqlmem.svg" alt="logo" width="60"/> gocqlmem <div style="float:right;"> [![coveralls](https://coveralls.io/repos/github/capillariesio/gocqlmem/badge.svg?branch=main)](https://coveralls.io/github/capillariesio/gocqlmem?branch=main) [![Go Reference](https://pkg.go.dev/badge/github.com/capillariesio/gocqlmem.svg)](https://pkg.go.dev/github.com/capillariesio/gocqlmem)</div>
 
 Rationale: I have a project that uses <a href="https://github.com/apache/cassandra-gocql-driver">gocql (Cassandra gocql driver)</a> and I want to create unit tests that exercise pieces that actually call gocql.
 Couldn't find a library that simulates Cassandra access via gocql, so created my own.
