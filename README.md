@@ -14,7 +14,7 @@ In your code, instead of gocql objects Iter, Query and Session, use shim interfa
 
 So the caller should not know either original gocql implementation is called, or gocqlmem implementation.
 
-Sample code creating a gocqlshims.Session depending on the configuration (test/prod). For a complete sample use, see code in https://github.com/capillariesio/capillaries/blob/main/pkg/db/cassandra.go.
+Below is the sample code creating a gocqlshims.Session depending on the configuration (test/prod). For a complete sample use, see code in https://github.com/capillariesio/capillaries/blob/main/pkg/db/cassandra.go and the test in https://github.com/capillariesio/capillaries/blob/main/pkg/api/api_test.go.
 
 
 ```
