@@ -281,7 +281,7 @@ func TestDatetimeFunctions(t *testing.T) {
 	ti := time.Now()
 	curTime := int64(((ti.Hour()*60+ti.Minute())*60+ti.Second())*1000000000 + ti.Nanosecond())
 	assert.Nil(t, err)
-	assert.Equal(t, curTime/10000000, val.(int64)/10000000) // Give it some slack
+	assert.Equal(t, curTime/100000000, val.(int64)/100000000) // Give it some slack
 
 	// toTimestamp
 

@@ -1,6 +1,7 @@
 package gocqlmem
 
 import (
+	"fmt"
 	"testing"
 
 	gocql "github.com/apache/cassandra-gocql-driver/v2"
@@ -201,4 +202,36 @@ func TestUuid(t *testing.T) {
 	assert.Equal(t, uB[1], uC[1])
 	assert.Equal(t, uB[14], uC[14])
 	assert.Equal(t, uB[15], uC[15])
+}
+
+func TestPageState(t *testing.T) {
+	s := NewGocqlmemSession()
+	assert.Nil(t, s.Query("CREATE KEYSPACE ks1").Exec())
+	assert.Nil(t, s.Query("CREATE TABLE ks1.t1 (a int, b bigint, primary key (a))").Exec())
+
+	dest := map[string]any{}
+	var isApplied bool
+	var err error
+	isApplied, err = s.Query("INSERT INTO ks1.t1 (a,b) VALUES (1,1)").MapScanCAS(dest)
+	assert.Nil(t, err)
+	assert.True(t, isApplied)
+	isApplied, err = s.Query("INSERT INTO ks1.t1 (a,b) VALUES (2,2)").MapScanCAS(dest)
+	assert.Nil(t, err)
+	assert.True(t, isApplied)
+
+	iter := s.Query(`SELECT a,b FROM ks1.t1`).PageSize(1).PageState([]byte{}).Iter()
+	assert.Nil(t, err)
+	assert.Equal(t, "[0 0 0 0]", fmt.Sprintf("%v", iter.PageState()))
+
+	iter = s.Query(`SELECT a,b FROM ks1.t1`).PageSize(2).PageState([]byte{}).Iter()
+	assert.Nil(t, err)
+	assert.Equal(t, "[1 0 0 0]", fmt.Sprintf("%v", iter.PageState()))
+
+	iter = s.Query(`SELECT a,b FROM ks1.t1`).PageSize(3).PageState([]byte{}).Iter()
+	assert.Nil(t, err)
+	assert.Equal(t, "[1 0 0 0]", fmt.Sprintf("%v", iter.PageState()))
+
+	iter = s.Query(`SELECT a,b FROM ks1.t1`).PageSize(3).PageState(iter.PageState()).Iter()
+	assert.Nil(t, err)
+	assert.Equal(t, "[]", fmt.Sprintf("%v", iter.PageState())) // No records returned - empty page state
 }
