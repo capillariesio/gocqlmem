@@ -222,6 +222,9 @@ func (q *gocqlmemQuery) Iter() gocqlshims.Iter {
 				return newGocqlmemIterWithError(fmt.Errorf("cannot convert page state %v to int: %s", q.pageState, err.Error()))
 			}
 		}
+		if q.pageSize <= 0 {
+			q.pageSize = 5000 // gocql default
+		}
 		names, values, typeInfos, newLastSelectedRowIdx, err := q.session.execSelect(cmd, int(lastSelectedRowIdx), q.pageSize, q.values)
 		if err != nil {
 			return newGocqlmemIterWithError(err)
@@ -233,9 +236,13 @@ func (q *gocqlmemQuery) Iter() gocqlshims.Iter {
 
 		// This is our implementation of pagestate: we store the idx of the last selected row idx
 		buf := new(bytes.Buffer)
-		err = binary.Write(buf, binary.LittleEndian, int32(newLastSelectedRowIdx))
-		if err != nil {
-			return newGocqlmemIterWithError(fmt.Errorf("cannot convert int %d to byte slice: %s", lastSelectedRowIdx, err.Error()))
+		if len(values) == 0 {
+			buf = &bytes.Buffer{}
+		} else {
+			err = binary.Write(buf, binary.LittleEndian, int32(newLastSelectedRowIdx))
+			if err != nil {
+				return newGocqlmemIterWithError(fmt.Errorf("cannot convert int %d to byte slice: %s", lastSelectedRowIdx, err.Error()))
+			}
 		}
 
 		return newGocqlmemIterWithDataAndPagingState(cmd.GetCtxKeyspace(), cmd.TableName,
